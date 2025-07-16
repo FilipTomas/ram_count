@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/ftomas/github/ram/debug/_deps/bioparser-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -26,6 +26,7 @@ static struct option options[] = {
   {"matches", required_argument, nullptr, 'm'},
   {"gap", required_argument, nullptr, 'g'},
   {"minhash", no_argument, nullptr, 'M'},
+  {"fraction", required_argument, nullptr, 'F'},
   {"threads", required_argument, nullptr, 't'},
   {"version", no_argument, nullptr, 'v'},
   {"help", no_argument, nullptr, 'h'},
@@ -99,6 +100,9 @@ void Help() {
       "      maximal gap between minimizer hits in a chain\n"
       "    --minhash\n"
       "      use only a portion of all minimizers\n"
+      "    --fraction <float>\n"
+      "       default: 0.2"
+      "       fraction of reads used to count kmers"
       "    -t, --threads <int>\n"
       "      default: 1\n"
       "      number of threads\n"
@@ -119,6 +123,7 @@ int main(int argc, char** argv) {
   std::uint32_t gap = 10000;
   double frequency = 0.001;
   bool minhash = false;
+  float fraction = 0.2;
   std::uint32_t num_threads = 1;
 
   std::vector<std::string> input_paths;
@@ -136,6 +141,7 @@ int main(int argc, char** argv) {
       case 'f': frequency = std::atof(optarg); break;
       case 'M': minhash = true; break;
       case 't': num_threads = std::atoi(optarg); break;
+      case 'F': fraction = std::atof(optarg); break;
       case 'v': std::cout << VERSION << std::endl; return 0;
       case 'h': Help(); return 0;
       default: return 1;
@@ -207,6 +213,8 @@ int main(int argc, char** argv) {
 
     timer.Start();
 
+    minimizer_engine.Count(
+         targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 

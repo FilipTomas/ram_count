@@ -1,0 +1,1 @@
+/usr/bin/c++  -Wall -Wextra -pedantic -g CMakeFiles/ram_test.dir/test/minimizer_engine_test.cpp.o -o bin/ram_test  lib/libram.a lib/libgtest_maind.a -pthread /usr/lib/x86_64-linux-gnu/libz.so lib/libgtestd.a -lpthread

@@ -41,6 +41,12 @@ class MinimizerEngine {
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
       bool minhash = false);
 
+  void Count(
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
+      float fraction,
+      bool minhash = false);  // count k-mers in preconstructed minimizer index
+
   // set occurrence frequency threshold
   void Filter(double frequency);
 
@@ -155,6 +161,9 @@ class MinimizerEngine {
       const std::unique_ptr<biosoup::NucleicAcid>& sequence,
       bool minhash = false) const;
 
+  std::vector<Kmer> Count(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence);
+
   std::vector<biosoup::Overlap> Chain(
       std::uint64_t lhs_id,
       std::vector<Match>&& matches) const;
@@ -181,6 +190,12 @@ class MinimizerEngine {
   std::uint32_t occurrence_;
   std::vector<Index> index_;
   std::shared_ptr<thread_pool::ThreadPool> thread_pool_;
+  std::uint32_t het_peak_ = 25;
+  std::uint32_t het_std_;  // peak of heterogeneity in the minimizer index
+  std::uint32_t hom_peak_;
+  std::uint32_t hom_std_ = 25;  // peak of homogeneity in the minimizer
+  std::uint32_t err_peak_ = 2;
+  std::unordered_map<std::uint64_t, std::size_t> kmer_counts_;
 };
 
 }  // namespace ram

@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/CMakeFiles/biosoup-populate"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/CMakeFiles/biosoup-populate.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/CMakeFiles/biosoup-populate-complete.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-build.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-configure.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-download.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-install.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-mkdir.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-patch.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-test.rule"
+		},
+		{
+			"file" : "/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/biosoup-populate-prefix/src/biosoup-populate-stamp/biosoup-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"biosoup-populate"
+		],
+		"name" : "biosoup-populate"
+	}
+}
