@@ -64,6 +64,14 @@ class MinimizerEngine {
       const std::unique_ptr<biosoup::NucleicAcid>& rhs,
       bool minhash = false) const;  // only lhs
 
+  std::uint32_t het_peak() const {
+    return het_peak_;
+  }
+
+  std::uint32_t hom_peak() const {
+    return hom_peak_;
+  }
+
  private:
   struct Kmer {
    public:
