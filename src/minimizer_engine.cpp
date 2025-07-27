@@ -644,6 +644,65 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::Count(
   return dst;
 }
 
+std::vector<std::uint32_t> MinimizerEngine::SketchRead(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    std::uint32_t step){
+
+  if (sequence->inflated_len < k_) {
+    return std::vector<std::uint32_t>{};
+  }
+
+  std::uint64_t mask = (1ULL << (k_ * 2)) - 1;
+
+  auto hash = [&] (std::uint64_t key) -> std::uint64_t {
+    key = ((~key) + (key << 21)) & mask;
+    key = key ^ (key >> 24);
+    key = ((key + (key << 3)) + (key << 8)) & mask;
+    key = key ^ (key >> 14);
+    key = ((key + (key << 2)) + (key << 4)) & mask;
+    key = key ^ (key >> 28);
+    key = (key + (key << 31)) & mask;
+    return key;
+  };
+
+  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+      key &= ~ (3ULL << 62);         
+      key |= (std::uint64_t(pattern & 3)      
+              << 62);                        
+      return key;
+  };
+
+  auto return_kmer_count = [&] (std::uint64_t value) -> std::uint64_t {
+    auto val = kmer_counts_.find(set_top2(value, 0));
+    if(val != kmer_counts_.end()) {
+    return val->second;
+  } 
+    return 0; 
+  };
+
+  std::uint64_t shift = (k_ - 1) * 2;
+  std::uint64_t minimizer = 0;
+  std::uint64_t reverse_minimizer = 0;
+  
+
+  std::vector<std::uint32_t> dst;
+
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    std::uint64_t c = sequence->Code(i);
+    minimizer = ((minimizer << 2) | c) & mask;
+    reverse_minimizer = (reverse_minimizer >> 2) | ((c ^ 3) << shift);
+    if (i >= k_ - 1U) {
+      if (minimizer < reverse_minimizer) {
+        dst.emplace_back(return_kmer_count(hash(minimizer)));
+      } else if (minimizer > reverse_minimizer) {
+        dst.emplace_back(return_kmer_count(hash(reverse_minimizer)));
+      }
+    }
+  }
+
+  return dst;
+};
+
 std::vector<MinimizerEngine::Kmer> MinimizerEngine::Minimize(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
     bool minhash) const {
