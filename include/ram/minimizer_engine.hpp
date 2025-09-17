@@ -47,6 +47,12 @@ class MinimizerEngine {
       float fraction,
       bool minhash = false);  // count k-mers in preconstructed minimizer index
 
+  // void CountKmersAbove31(
+  //     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+  //     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
+  //     float fraction,
+  //     bool minhash = false);  // count k-mers in preconstructed minimizer index
+
   std::vector<std::uint16_t> SketchRead(const std::unique_ptr<biosoup::NucleicAcid>& sequence, std::uint32_t step);
   // set occurrence frequency threshold
   void Filter(double frequency);
@@ -73,7 +79,7 @@ class MinimizerEngine {
     return hom_peak_;
   }
 
- private:
+private:
   struct Kmer {
    public:
     Kmer() = default;
@@ -113,6 +119,9 @@ class MinimizerEngine {
         : group(group),
           positions(positions) {
     }
+
+  // Match(const std::pair<std::uint64_t, std::uint64_t>& p)
+  //   : group(p.first), positions(p.second) {}
 
     std::uint32_t rhs_id() const {
       return static_cast<std::uint32_t>(group >> 33);
@@ -170,8 +179,18 @@ class MinimizerEngine {
       const std::unique_ptr<biosoup::NucleicAcid>& sequence,
       bool minhash = false) const;
 
+  std::vector<Kmer> Minimize_64(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    bool minhash = false) const;
+
   std::vector<Kmer> Count(
-      const std::unique_ptr<biosoup::NucleicAcid>& sequence);
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+
+  std::vector<Kmer> CountKmersAbove31(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+
+  std::vector<Kmer> MinimizeByCount(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
   std::vector<biosoup::Overlap> Chain(
       std::uint64_t lhs_id,
@@ -190,7 +209,7 @@ class MinimizerEngine {
       std::vector<Match>::const_iterator last,
       Compare comp);  // binary comparison function
 
-  std::uint32_t k_;
+  std::uint32_t k_; 
   std::uint32_t w_;
   std::uint32_t bandwidth_;
   std::uint32_t chain_;
