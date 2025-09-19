@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/ftomas/github/ram/debug/_deps/biosoup-subbuild/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

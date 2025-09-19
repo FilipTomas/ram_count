@@ -1,2 +1,0 @@
-/usr/bin/ar qc lib/libram.a CMakeFiles/ram.dir/src/minimizer_engine.cpp.o
-/usr/bin/ranlib lib/libram.a
