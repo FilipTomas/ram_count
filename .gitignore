@@ -1,3 +1,5 @@
 # Compiled Object files
 build/
 build_2/
+debug/
+.vscode/
