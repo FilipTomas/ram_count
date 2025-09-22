@@ -651,12 +651,12 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::Count(
   return dst;
 }
 
-std::vector<std::uint16_t> MinimizerEngine::SketchRead(
+std::vector<std::uint64_t, std::uint16_t> MinimizerEngine::SketchRead(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
     std::uint32_t step){
 
   if (sequence->inflated_len < k_) {
-    return std::vector<std::uint16_t>{};
+    return std::vector<std::uint64_t, std::uint16_t>{};
   }
 
   //std::uint64_t mask = (1ULL << (k_ * 2)) - 1;
@@ -697,7 +697,7 @@ std::vector<std::uint16_t> MinimizerEngine::SketchRead(
   std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
   
 
-  std::vector<std::uint16_t> dst;
+  std::vector<std::uint64_t, std::uint16_t> dst;
 
   for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
     std::uint64_t c = sequence->Code(i);
@@ -731,10 +731,10 @@ std::vector<std::uint16_t> MinimizerEngine::SketchRead(
         else fwd_is_min = kmer_lo < rev_kmer_lo;
       }
       if (fwd_is_min) {
-        dst.emplace_back(return_kmer_count(hash2(kmer_hi, kmer_lo)));
+        dst.emplace_back(set_top2(hash2(kmer_hi, kmer_lo), 0), return_kmer_count(hash2(kmer_hi, kmer_lo)));
         //window_add(hash2(kmer_hi, kmer_lo), (i - (k_ - 1U)) << 1 | 0);
       } else {
-        dst.emplace_back(return_kmer_count(hash2(rev_kmer_hi, rev_kmer_lo)));
+        dst.emplace_back(set_top2(hash2(rev_kmer_hi, rev_kmer_lo), 0), return_kmer_count(hash2(rev_kmer_hi, rev_kmer_lo)));
         //window_add(hash2(rev_kmer_hi, rev_kmer_lo), (i - (k_ - 1U)) << 1 | 1);
       }
     }
