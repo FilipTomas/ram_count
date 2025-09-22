@@ -53,7 +53,7 @@ class MinimizerEngine {
   //     float fraction,
   //     bool minhash = false);  // count k-mers in preconstructed minimizer index
 
-  std::vector<std::uint64_t, uint16_t> SketchRead(const std::unique_ptr<biosoup::NucleicAcid>& sequence, std::uint32_t step);
+  std::vector<std::pair<std::uint64_t, uint16_t>> SketchRead(const std::unique_ptr<biosoup::NucleicAcid>& sequence, std::uint32_t step);
   // set occurrence frequency threshold
   void Filter(double frequency);
 

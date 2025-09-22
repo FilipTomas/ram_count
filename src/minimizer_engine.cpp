@@ -651,12 +651,12 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::Count(
   return dst;
 }
 
-std::vector<std::uint64_t, std::uint16_t> MinimizerEngine::SketchRead(
+std::vector<std::pair<std::uint64_t, std::uint16_t>> MinimizerEngine::SketchRead(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
     std::uint32_t step){
 
   if (sequence->inflated_len < k_) {
-    return std::vector<std::uint64_t, std::uint16_t>{};
+    return std::vector<std::pair<std::uint64_t, std::uint16_t>>{};
   }
 
   //std::uint64_t mask = (1ULL << (k_ * 2)) - 1;
@@ -697,7 +697,7 @@ std::vector<std::uint64_t, std::uint16_t> MinimizerEngine::SketchRead(
   std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
   
 
-  std::vector<std::uint64_t, std::uint16_t> dst;
+  std::vector<std::pair<std::uint64_t, std::uint16_t>> dst;
 
   for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
     std::uint64_t c = sequence->Code(i);
