@@ -20,18 +20,18 @@ MinimizerEngine::MinimizerEngine(
     std::uint32_t matches,
     std::uint32_t gap,
     double fraction)
-    : k_(std::min(std::max(k, 1U), 62U)),
-      w_(w),
-      bandwidth_(bandwidth),
-      chain_(chain),
-      matches_(matches),
-      gap_(gap),
-      occurrence_(-1),
-      index_(1U << std::min(14U, 2 * k_)),
-      thread_pool_(thread_pool ?
-          thread_pool :
-          std::make_shared<thread_pool::ThreadPool>(1),
-      fraction_ = fraction) {}
+  : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
+  , w_(w)
+  , bandwidth_(bandwidth)
+  , chain_(chain)
+  , matches_(matches)
+  , gap_(gap)
+  , occurrence_(-1)
+  , index_(1U << std::min<std::uint32_t>(14U, 2 * k_))
+  , thread_pool_(thread_pool ? thread_pool
+                             : std::make_shared<thread_pool::ThreadPool>(1))
+  , fraction_(fraction)
+{}
 
 std::uint32_t MinimizerEngine::Index::Find(
     std::uint64_t key,
@@ -207,106 +207,106 @@ void MinimizerEngine::Filter(double frequency) {
 }
 
 
-std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-    bool avoid_equal,
-    bool avoid_symmetric,
-    bool minhash,
-    std::vector<std::uint32_t>* filtered) const {
-  auto sketch = MinimizeRepetitiveByCount(sequence);
-  if (sketch.empty()) {
-    return std::vector<biosoup::Overlap>{};
-  }
+// std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
+//     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+//     bool avoid_equal,
+//     bool avoid_symmetric,
+//     bool minhash,
+//     std::vector<std::uint32_t>* filtered) const {
+//   auto sketch = MinimizeRepetitiveByCount(sequence);
+//   if (sketch.empty()) {
+//     return std::vector<biosoup::Overlap>{};
+//   }
 
-  std::vector<Match> matches;
-  auto add_match = [&] (const Kmer& kmer, uint64_t origin) -> void {
-    auto id = [] (std::uint64_t origin) -> std::uint32_t {
-      return static_cast<std::uint32_t>(origin >> 32);
-    };
-    auto position = [] (std::uint64_t origin) -> std::uint32_t {
-      return static_cast<std::uint32_t>(origin) >> 1;
-    };
-    auto strand = [] (std::uint64_t origin) -> bool {
-      return origin & 1;
-    };
+//   std::vector<Match> matches;
+//   auto add_match = [&] (const Kmer& kmer, uint64_t origin) -> void {
+//     auto id = [] (std::uint64_t origin) -> std::uint32_t {
+//       return static_cast<std::uint32_t>(origin >> 32);
+//     };
+//     auto position = [] (std::uint64_t origin) -> std::uint32_t {
+//       return static_cast<std::uint32_t>(origin) >> 1;
+//     };
+//     auto strand = [] (std::uint64_t origin) -> bool {
+//       return origin & 1;
+//     };
 
-    if (avoid_equal && sequence->id == id(origin)) {
-      return;
-    }
-    if (avoid_symmetric && sequence->id > id(origin)) {
-      return;
-    }
+//     if (avoid_equal && sequence->id == id(origin)) {
+//       return;
+//     }
+//     if (avoid_symmetric && sequence->id > id(origin)) {
+//       return;
+//     }
 
-    std::uint64_t rhs_id = id(origin);
-    std::uint64_t strand_ = kmer.strand() == strand(origin);
-    std::uint64_t lhs_pos = kmer.position();
-    std::uint64_t rhs_pos = position(origin);
-    std::uint64_t diagonal = !strand_ ?
-        rhs_pos + lhs_pos :
-        rhs_pos - lhs_pos + (3ULL << 30);
+//     std::uint64_t rhs_id = id(origin);
+//     std::uint64_t strand_ = kmer.strand() == strand(origin);
+//     std::uint64_t lhs_pos = kmer.position();
+//     std::uint64_t rhs_pos = position(origin);
+//     std::uint64_t diagonal = !strand_ ?
+//         rhs_pos + lhs_pos :
+//         rhs_pos - lhs_pos + (3ULL << 30);
 
-    matches.emplace_back(
-        (((rhs_id << 1) | strand_) << 32) | diagonal,
-        (lhs_pos << 32) | rhs_pos);
-  };
+//     matches.emplace_back(
+//         (((rhs_id << 1) | strand_) << 32) | diagonal,
+//         (lhs_pos << 32) | rhs_pos);
+//   };
 
-  struct Hit {
-    const Kmer* kmer;
-    std::uint32_t n;
-    const uint64_t* origins;
+//   struct Hit {
+//     const Kmer* kmer;
+//     std::uint32_t n;
+//     const uint64_t* origins;
 
-    Hit(const Kmer* kmer, std::uint32_t n, const uint64_t* origins)
-        : kmer(kmer),
-          n(n),
-          origins(origins) {}
+//     Hit(const Kmer* kmer, std::uint32_t n, const uint64_t* origins)
+//         : kmer(kmer),
+//           n(n),
+//           origins(origins) {}
 
-    bool operator<(const Hit& other) const {
-      return n < other.n;
-    }
-  };
-  std::vector<Hit> filtered_hits;
+//     bool operator<(const Hit& other) const {
+//       return n < other.n;
+//     }
+//   };
+//   std::vector<Hit> filtered_hits;
 
-  std::uint64_t mask = index_.size() - 1;
-  std::uint32_t prev = 0;
+//   std::uint64_t mask = index_.size() - 1;
+//   std::uint32_t prev = 0;
 
-  sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
+//   sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
 
-  for (const auto& kmer : sketch) {
-    std::uint32_t i = kmer.value & mask;
-    const uint64_t* origins = nullptr;
-    auto n = index_[i].Find(kmer.value, &origins);
-    if (n > occurrence_) {
-      filtered_hits.emplace_back(&kmer, n, origins);
-      if (filtered) {
-        filtered->emplace_back(kmer.position());
-      }
-      continue;
-    }
+//   for (const auto& kmer : sketch) {
+//     std::uint32_t i = kmer.value & mask;
+//     const uint64_t* origins = nullptr;
+//     auto n = index_[i].Find(kmer.value, &origins);
+//     if (n > occurrence_) {
+//       filtered_hits.emplace_back(&kmer, n, origins);
+//       if (filtered) {
+//         filtered->emplace_back(kmer.position());
+//       }
+//       continue;
+//     }
 
-    // std::size_t rescuees = std::min(
-    //     static_cast<std::size_t>(kmer.position() - prev) / bandwidth_,
-    //     filtered_hits.size());
-    // if (rescuees) {
-    //   std::partial_sort(
-    //       filtered_hits.begin(),
-    //       filtered_hits.begin() + rescuees,
-    //       filtered_hits.end());
-    //   for (auto it = filtered_hits.begin(); rescuees; rescuees--, ++it) {
-    //     for (; it->n; it->n--, ++it->origins) {
-    //       add_match(*it->kmer, *it->origins);
-    //     }
-    //   }
-    // }
-    filtered_hits.clear();
-    prev = kmer.position();
+//     // std::size_t rescuees = std::min(
+//     //     static_cast<std::size_t>(kmer.position() - prev) / bandwidth_,
+//     //     filtered_hits.size());
+//     // if (rescuees) {
+//     //   std::partial_sort(
+//     //       filtered_hits.begin(),
+//     //       filtered_hits.begin() + rescuees,
+//     //       filtered_hits.end());
+//     //   for (auto it = filtered_hits.begin(); rescuees; rescuees--, ++it) {
+//     //     for (; it->n; it->n--, ++it->origins) {
+//     //       add_match(*it->kmer, *it->origins);
+//     //     }
+//     //   }
+//     // }
+//     filtered_hits.clear();
+//     prev = kmer.position();
 
-    for (; n; n--, ++origins) {
-      add_match(kmer, *origins);
-    }
-  }
+//     for (; n; n--, ++origins) {
+//       add_match(kmer, *origins);
+//     }
+//   }
 
-  return Chain(sequence->id, std::move(matches));
-}
+//   return Chain(sequence->id, std::move(matches));
+// }
 
 std::vector<biosoup::Overlap> MinimizerEngine::Map(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
@@ -579,6 +579,32 @@ std::vector<biosoup::Overlap> MinimizerEngine::Chain(
   return dst;
 }
 
+  
+std::pair<std::size_t, std::size_t> find_hist_peak_ignoring_low(const std::map<std::size_t, std::size_t>& hist,
+                              std::size_t min_multiplicity /*=5*/,
+                              std::size_t max_multiplicity /*=0*/) {
+    if (hist.empty()) return std::make_pair(0u, 0u);
+
+    std::map<std::size_t, std::size_t>::const_iterator it  = hist.lower_bound(min_multiplicity);
+    std::map<std::size_t, std::size_t>::const_iterator end = hist.end();
+    if (max_multiplicity > 0) {
+      end = hist.upper_bound(max_multiplicity); // first > max
+    }
+
+    if (it == end) return std::make_pair(0u, 0u);
+
+    std::size_t peak_depth  = 0;
+    std::size_t peak_height = 0;
+
+    for (; it != end; ++it) {
+      if (it->second > peak_height) {
+        peak_height = it->second;
+        peak_depth  = it->first;
+      }
+    }
+    return std::make_pair(peak_depth, peak_height);
+};
+
 void MinimizerEngine::Count(
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
@@ -626,33 +652,10 @@ void MinimizerEngine::Count(
       ++hist[kv.second];          // kv.second is the multiplicity
   }
 
-auto find_hist_peak_ignoring_low = [&](const std::map<std::size_t, std::size_t>& hist,
-                            std::size_t min_multiplicity = 3) -> std::pair<std::size_t, std::size_t>  {
-  // Fast exit
-    if (hist.empty()) return {0, 0};
 
-    // First bin with key >= min_multiplicity
-    auto begin_it = hist.lower_bound(min_multiplicity);
-    if (begin_it == hist.end()) {
-      // All bins are below the threshold
-      return {0, 0};
-    }
-
-    // Find the bin with the largest height among keys >= min_multiplicity
-    auto peak_it = std::max_element(
-        begin_it, hist.end(),
-        [](const auto& a, const auto& b) {
-          return a.second < b.second;  // compare bin heights
-        });
-
-    return (peak_it == hist.end()) ? std::pair<std::size_t, std::size_t>{0, 0}
-                                  : std::pair<std::size_t, std::size_t>{peak_it->first, peak_it->second};
-  };
-
-
-  auto [peak_depth, peak_height] = find_hist_peak_ignoring_low(hist, 3);
+  std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(hist, 3, 100);
   
-  hom_peak_ = peak_depth/fraction;
+  hom_peak_ = ph.first/fraction;
   het_peak_ = hom_peak_/2;
 
   std::cerr << "[ram::] "
@@ -1198,7 +1201,7 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
   return dst;
 }
 
-std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeRepetitiveByCount(
+/*std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeRepetitiveByCount(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
   if (sequence->inflated_len < k_) {
     return std::vector<Kmer>{};
@@ -1345,7 +1348,7 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeRepetitiveByCount(
 
   return dst;
 }
-
+*/
 template<typename RandomAccessIterator, typename Compare>
 void MinimizerEngine::RadixSort(
     RandomAccessIterator first,

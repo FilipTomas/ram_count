@@ -72,12 +72,12 @@ class MinimizerEngine {
       const std::unique_ptr<biosoup::NucleicAcid>& rhs,
       bool minhash = false) const;  // only lhs
 
-  std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-    bool avoid_equal,
-    bool avoid_symmetric,
-    bool minhash,
-    std::vector<std::uint32_t>* filtered) const;
+  // std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
+  //   const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+  //   bool avoid_equal,
+  //   bool avoid_symmetric,
+  //   bool minhash,
+  //   std::vector<std::uint32_t>* filtered) const;
 
   std::uint32_t het_peak() const {
     return het_peak_;
@@ -200,8 +200,8 @@ private:
   std::vector<Kmer> MinimizeByCount(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
-  std::vector<Kmer> MinimizeRepetitiveByCount(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+  // std::vector<Kmer> MinimizeRepetitiveByCount(
+  //   const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
   std::vector<biosoup::Overlap> Chain(
       std::uint64_t lhs_id,
