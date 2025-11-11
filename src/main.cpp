@@ -188,7 +188,8 @@ int main(int argc, char** argv) {
       bandwidth,
       chain,
       matches,
-      gap};
+      gap,
+      fraction};
 
   biosoup::Timer timer{};
 
@@ -215,7 +216,7 @@ int main(int argc, char** argv) {
 
     minimizer_engine.Count(
          targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
-   // minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
+    //minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 
@@ -257,10 +258,13 @@ int main(int argc, char** argv) {
       biosoup::ProgressBar bar{
           static_cast<std::uint32_t>(futures.size()), 16};
 
+      std::vector<biosoup::Overlap> overlaps;
+
       std::uint64_t rhs_offset = targets.front()->id;
       std::uint64_t lhs_offset = sequences.front()->id;
       for (auto& it : futures) {
         for (const auto& jt : it.get()) {
+          overlaps.emplace_back(jt);
           std::cout << sequences[jt.lhs_id - lhs_offset]->name << "\t"
                     << sequences[jt.lhs_id - lhs_offset]->inflated_len << "\t"
                     << jt.lhs_begin << "\t"

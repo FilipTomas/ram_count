@@ -24,7 +24,8 @@ class MinimizerEngine {
       std::uint32_t bandwidth = 500,
       std::uint32_t chain = 4,
       std::uint32_t matches = 100,
-      std::uint32_t gap = 10000);
+      std::uint32_t gap = 10000,
+      double fraction = 0.2);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
   MinimizerEngine& operator=(const MinimizerEngine&) = delete;
@@ -70,6 +71,13 @@ class MinimizerEngine {
       const std::unique_ptr<biosoup::NucleicAcid>& lhs,
       const std::unique_ptr<biosoup::NucleicAcid>& rhs,
       bool minhash = false) const;  // only lhs
+
+  std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    bool avoid_equal,
+    bool avoid_symmetric,
+    bool minhash,
+    std::vector<std::uint32_t>* filtered) const;
 
   std::uint32_t het_peak() const {
     return het_peak_;
@@ -192,6 +200,9 @@ private:
   std::vector<Kmer> MinimizeByCount(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
+  std::vector<Kmer> MinimizeRepetitiveByCount(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+
   std::vector<biosoup::Overlap> Chain(
       std::uint64_t lhs_id,
       std::vector<Match>&& matches) const;
@@ -224,6 +235,7 @@ private:
   std::uint32_t hom_std_ = 25;  // peak of homogeneity in the minimizer
   std::uint32_t err_peak_ = 2;
   std::unordered_map<std::uint64_t, std::size_t> kmer_counts_;
+  double fraction_ = 0.2;
 };
 
 }  // namespace ram

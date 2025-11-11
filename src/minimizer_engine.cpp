@@ -18,7 +18,8 @@ MinimizerEngine::MinimizerEngine(
     std::uint32_t bandwidth,
     std::uint32_t chain,
     std::uint32_t matches,
-    std::uint32_t gap)
+    std::uint32_t gap,
+    double fraction)
     : k_(std::min(std::max(k, 1U), 62U)),
       w_(w),
       bandwidth_(bandwidth),
@@ -29,7 +30,8 @@ MinimizerEngine::MinimizerEngine(
       index_(1U << std::min(14U, 2 * k_)),
       thread_pool_(thread_pool ?
           thread_pool :
-          std::make_shared<thread_pool::ThreadPool>(1)) {}
+          std::make_shared<thread_pool::ThreadPool>(1),
+      fraction_ = fraction) {}
 
 std::uint32_t MinimizerEngine::Index::Find(
     std::uint64_t key,
@@ -202,6 +204,108 @@ void MinimizerEngine::Filter(double frequency) {
       occurrences.end());
   occurrence_ = occurrences[(1 - frequency) * occurrences.size()] + 1;
   std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
+}
+
+
+std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    bool avoid_equal,
+    bool avoid_symmetric,
+    bool minhash,
+    std::vector<std::uint32_t>* filtered) const {
+  auto sketch = MinimizeRepetitiveByCount(sequence);
+  if (sketch.empty()) {
+    return std::vector<biosoup::Overlap>{};
+  }
+
+  std::vector<Match> matches;
+  auto add_match = [&] (const Kmer& kmer, uint64_t origin) -> void {
+    auto id = [] (std::uint64_t origin) -> std::uint32_t {
+      return static_cast<std::uint32_t>(origin >> 32);
+    };
+    auto position = [] (std::uint64_t origin) -> std::uint32_t {
+      return static_cast<std::uint32_t>(origin) >> 1;
+    };
+    auto strand = [] (std::uint64_t origin) -> bool {
+      return origin & 1;
+    };
+
+    if (avoid_equal && sequence->id == id(origin)) {
+      return;
+    }
+    if (avoid_symmetric && sequence->id > id(origin)) {
+      return;
+    }
+
+    std::uint64_t rhs_id = id(origin);
+    std::uint64_t strand_ = kmer.strand() == strand(origin);
+    std::uint64_t lhs_pos = kmer.position();
+    std::uint64_t rhs_pos = position(origin);
+    std::uint64_t diagonal = !strand_ ?
+        rhs_pos + lhs_pos :
+        rhs_pos - lhs_pos + (3ULL << 30);
+
+    matches.emplace_back(
+        (((rhs_id << 1) | strand_) << 32) | diagonal,
+        (lhs_pos << 32) | rhs_pos);
+  };
+
+  struct Hit {
+    const Kmer* kmer;
+    std::uint32_t n;
+    const uint64_t* origins;
+
+    Hit(const Kmer* kmer, std::uint32_t n, const uint64_t* origins)
+        : kmer(kmer),
+          n(n),
+          origins(origins) {}
+
+    bool operator<(const Hit& other) const {
+      return n < other.n;
+    }
+  };
+  std::vector<Hit> filtered_hits;
+
+  std::uint64_t mask = index_.size() - 1;
+  std::uint32_t prev = 0;
+
+  sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
+
+  for (const auto& kmer : sketch) {
+    std::uint32_t i = kmer.value & mask;
+    const uint64_t* origins = nullptr;
+    auto n = index_[i].Find(kmer.value, &origins);
+    if (n > occurrence_) {
+      filtered_hits.emplace_back(&kmer, n, origins);
+      if (filtered) {
+        filtered->emplace_back(kmer.position());
+      }
+      continue;
+    }
+
+    // std::size_t rescuees = std::min(
+    //     static_cast<std::size_t>(kmer.position() - prev) / bandwidth_,
+    //     filtered_hits.size());
+    // if (rescuees) {
+    //   std::partial_sort(
+    //       filtered_hits.begin(),
+    //       filtered_hits.begin() + rescuees,
+    //       filtered_hits.end());
+    //   for (auto it = filtered_hits.begin(); rescuees; rescuees--, ++it) {
+    //     for (; it->n; it->n--, ++it->origins) {
+    //       add_match(*it->kmer, *it->origins);
+    //     }
+    //   }
+    // }
+    filtered_hits.clear();
+    prev = kmer.position();
+
+    for (; n; n--, ++origins) {
+      add_match(kmer, *origins);
+    }
+  }
+
+  return Chain(sequence->id, std::move(matches));
 }
 
 std::vector<biosoup::Overlap> MinimizerEngine::Map(
@@ -522,21 +626,31 @@ void MinimizerEngine::Count(
       ++hist[kv.second];          // kv.second is the multiplicity
   }
 
-  std::map<std::size_t, std::size_t>::iterator peak_it =
-      std::max_element(
-          hist.begin(),
-          hist.end(),
-          [](const std::pair<const std::size_t, std::size_t>& a,
-            const std::pair<const std::size_t, std::size_t>& b) {
-              return a.second < b.second;      // compare bin heights
-          });
+auto find_hist_peak_ignoring_low = [&](const std::map<std::size_t, std::size_t>& hist,
+                            std::size_t min_multiplicity = 3) -> std::pair<std::size_t, std::size_t>  {
+  // Fast exit
+    if (hist.empty()) return {0, 0};
 
-    std::size_t peak_depth = 0;
-    std::size_t peak_height = 0;
-    if (peak_it != hist.end()) {
-    peak_depth  = peak_it->first;   // multiplicity (coverage)
-    peak_height = peak_it->second;  // how many k-mers
-  }
+    // First bin with key >= min_multiplicity
+    auto begin_it = hist.lower_bound(min_multiplicity);
+    if (begin_it == hist.end()) {
+      // All bins are below the threshold
+      return {0, 0};
+    }
+
+    // Find the bin with the largest height among keys >= min_multiplicity
+    auto peak_it = std::max_element(
+        begin_it, hist.end(),
+        [](const auto& a, const auto& b) {
+          return a.second < b.second;  // compare bin heights
+        });
+
+    return (peak_it == hist.end()) ? std::pair<std::size_t, std::size_t>{0, 0}
+                                  : std::pair<std::size_t, std::size_t>{peak_it->first, peak_it->second};
+  };
+
+
+  auto [peak_depth, peak_height] = find_hist_peak_ignoring_low(hist, 3);
   
   hom_peak_ = peak_depth/fraction;
   het_peak_ = hom_peak_/2;
@@ -996,13 +1110,13 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
     //auto val = kmer_counts_.find(value);
     if (val != kmer_counts_.end()) {
       auto count = val->second;
-      if (count <= (het_peak_ / 4) * 0.2) {
+      if (count <= (het_peak_ / 4) * fraction_) {
         return set_top2(value, 3);  // Low frequency
-      } else if (count > (het_peak_ / 4) * 0.2 && count <= (het_peak_ * 1.5) * 0.2) {
+      } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ * 1.5) * fraction_) {
         return set_top2(value, 0);  // Medium frequency
-      } else if (count > (het_peak_ * 1.5) * 0.2 && count < (hom_peak_ * 1.5) * 0.2) {
+      } else if (count > (het_peak_ * 1.5) * fraction_ && count < (hom_peak_ * 1.5) * fraction_) {
         return set_top2(value, 1);  // High frequency
-      } else if (count >= (hom_peak_ * 1.5) * 0.2) {
+      } else if (count >= (hom_peak_ * 1.5) * fraction_) {
         return set_top2(value, 2);  // Very high frequency
       }
     }
@@ -1083,6 +1197,155 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
 
   return dst;
 }
+
+std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeRepetitiveByCount(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
+  if (sequence->inflated_len < k_) {
+    return std::vector<Kmer>{};
+  }
+
+  std::uint64_t kmer_lo = 0, kmer_hi = 0;
+  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
+  std::uint64_t mask_lo = (k_ <= 32) ? ((1ULL << (2 * k_)) - 1) : ~0ULL;
+  std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
+
+  auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
+    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
+    key = ((~key) + (key << 21));
+    key = key ^ (key >> 24);
+    key = ((key + (key << 3)) + (key << 8));
+    key = key ^ (key >> 14);
+    key = ((key + (key << 2)) + (key << 4));
+    key = key ^ (key >> 28);
+    key = (key + (key << 31));
+    return key;
+  };
+
+
+  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+      key &= ~ (3ULL << 62);                  // clear bits 63-62
+      key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
+              << 62);                         // move into bit-63/62 slots
+      return key;
+  };
+
+  auto get_top2 = [&] (std::uint64_t key) -> std::uint8_t {
+    return static_cast<std::uint8_t>((key >> 62) & 3);
+  };
+
+
+  auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
+    auto val = kmer_counts_.find(set_top2(value, 0));
+    //auto val = kmer_counts_.find(value);
+    if (val != kmer_counts_.end()) {
+      auto count = val->second;
+      if (count <= (het_peak_ / 4) * 0.2) {
+        return set_top2(value, 3);  // Low frequency
+      } else if (count > (het_peak_ / 4) * 0.2 && count <= (het_peak_ * 1.5) * 0.2) {
+        return set_top2(value, 0);  // Medium frequency
+      } else if (count > (het_peak_ * 1.5) * 0.2 && count < (hom_peak_ * 1.5) * 0.2) {
+        return set_top2(value, 1);  // High frequency
+      } else if (count >= (hom_peak_ * 1.5) * 0.2) {
+        return set_top2(value, 2);  // Very high frequency
+      }
+    }
+    return set_top2(value, 3);  // Default to low frequency
+   // return set_top2(value, 0);  // Default to medium frequency
+  };
+
+  auto get_kmer_class = [&](std::uint64_t value) -> std::uint8_t {
+    if(get_top2(value) == 3) {
+      return 3; // low frequency
+    } else if(get_top2(value) == 0) {
+      return 0; // medium frequency
+    } else if(get_top2(value) == 1) {
+      return 1; // high frequency
+    } else if(get_top2(value) == 2) {
+      return 2; // very high frequency
+    }
+    return 3; // default to low frequency
+  };
+
+  std::deque<Kmer> window;
+
+  auto window_add = [&] (std::uint64_t value, std::uint64_t location) -> void {
+    while (!window.empty() && window.back().value > value) {
+      window.pop_back();
+    }
+    window.emplace_back(value, location);
+  };
+
+  auto window_update = [&] (std::uint32_t position) -> void {
+    while (!window.empty() && (window.front().position()) < position) {
+      window.pop_front();
+    }
+  };
+
+  std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
+  std::uint64_t is_stored = 1ULL << 63;
+  std::vector<Kmer> dst;
+
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    std::uint64_t c = sequence->Code(i);
+
+    if (k_ <= 32) {
+      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
+    } else {
+      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
+      kmer_hi &= mask_hi;
+      kmer_lo = ((kmer_lo << 2) | c);
+    }
+
+    std::uint64_t rc = c ^ 3;
+    if (k_ <= 32) {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
+      rev_kmer_lo &= mask_lo;
+    } else {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3) << 62);
+      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
+      rev_kmer_hi &= mask_hi;
+    }
+
+    if (i >= k_ - 1U) {
+      bool fwd_is_min = false;
+      if (k_ <= 32) {
+        fwd_is_min = kmer_lo < rev_kmer_lo;
+      } else {
+        if (kmer_hi < rev_kmer_hi) fwd_is_min = true;
+        else if (kmer_hi > rev_kmer_hi) fwd_is_min = false;
+        else fwd_is_min = kmer_lo < rev_kmer_lo;
+      }
+      if (fwd_is_min) {
+        auto classified_kmer = classify_kmer(hash2(kmer_hi, kmer_lo));
+        if(!get_kmer_class(classified_kmer) == 2) {
+          window_add(classified_kmer, (i - (k_ - 1U)) << 1 | 0);
+        }
+      } else {
+        auto classified_kmer = classify_kmer(hash2(rev_kmer_hi, rev_kmer_lo));
+        if(!get_kmer_class(classified_kmer) == 2) {
+          window_add(classified_kmer, (i - (k_ - 1U)) << 1 | 1);
+        }
+      }
+    }
+
+    if (i >= (k_ - 1U) + (w_ - 1U)) {
+      for (auto it = window.begin(); it != window.end(); ++it) {
+        if (it->value != window.front().value) {
+          break;
+        }
+        if (it->origin & is_stored) {
+          continue;
+        }
+        dst.emplace_back(it->value, id | it->origin);
+        it->origin |= is_stored;
+      }
+      window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
+    }
+  }
+
+  return dst;
+}
+
 template<typename RandomAccessIterator, typename Compare>
 void MinimizerEngine::RadixSort(
     RandomAccessIterator first,
