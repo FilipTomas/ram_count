@@ -8,6 +8,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <map>
+#include <fstream>
 
 namespace ram {
 
@@ -90,20 +91,20 @@ void MinimizerEngine::Minimize(
     }
   }
 
-  // auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
-  //     key &= ~ (3ULL << 62);                  // clear bits 63-62
-  //     key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
-  //             << 62);                         // move into bit-63/62 slots
-  //     return key;
-  // };
+  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+      key &= ~ (3ULL << 62);                  // clear bits 63-62
+      key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
+              << 62);                         // move into bit-63/62 slots
+      return key;
+  };
 
 
-
-  //   for(const auto& it : kmer_counts){
-  //     std::uint64_t stored_key = set_top2(it.first,0);
-  //     std::cout << stored_key << "\t" << it.second << std::endl;
-  //   }
-  //   exit(0);
+  std::ofstream minimizer_file("minimizer_counts.txt");
+  for(const auto& it : kmer_counts){
+      std::uint64_t stored_key = set_top2(it.first,0);
+      minimizer_file << stored_key << "\t" << it.second << std::endl;
+    }
+  minimizer_file.close();
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
@@ -177,32 +178,33 @@ void MinimizerEngine::Filter(double frequency) {
         "[ram::MinimizerEngine::Filter] error: invalid frequency");
   }
 
-  if (frequency == 0) {
-    occurrence_ = -1;
-    return;
-  }
+  // if (frequency == 0) {
+  //   occurrence_ = -1;
+  //   return;
+  // }
 
-  std::vector<std::uint32_t> occurrences;
-  for (const auto& it : index_) {
-    for (const auto& jt : it.locator) {
-      if (jt.first & 1) {
-        occurrences.emplace_back(1);
-      } else {
-        occurrences.emplace_back(static_cast<std::uint32_t>(jt.second));
-      }
-    }
-  }
+  // std::vector<std::uint32_t> occurrences;
+  // for (const auto& it : index_) {
+  //   for (const auto& jt : it.locator) {
+  //     if (jt.first & 1) {
+  //       occurrences.emplace_back(1);
+  //     } else {
+  //       occurrences.emplace_back(static_cast<std::uint32_t>(jt.second));
+  //     }
+  //   }
+  // }
 
-  if (occurrences.empty()) {
-    occurrence_ = -1;
-    return;
-  }
+  // if (occurrences.empty()) {
+  //   occurrence_ = -1;
+  //   return;
+  // }
 
-  std::nth_element(
-      occurrences.begin(),
-      occurrences.begin() + (1 - frequency) * occurrences.size(),
-      occurrences.end());
-  occurrence_ = occurrences[(1 - frequency) * occurrences.size()] + 1;
+  // std::nth_element(
+  //     occurrences.begin(),
+  //     occurrences.begin() + (1 - frequency) * occurrences.size(),
+  //     occurrences.end());
+  // occurrence_ = occurrences[(1 - frequency) * occurrences.size()] + 1;
+  occurrence_ = 1000;
   std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
 }
 
@@ -709,10 +711,11 @@ void MinimizerEngine::Count(
   }
   std::map<std::size_t, std::size_t> hist;
 
-  // for (const auto& kv : kmer_counts){
-  //   std::cout << kv.first << "\t" << kv.second << std::endl;
-  // };
-  // exit(0);
+  std::ofstream kmers_file("kmers.txt");
+  for (const auto& kv : kmer_counts){
+    kmers_file << kv.first << "\t" << kv.second << std::endl;
+  };
+  kmers_file.close();
 
   for (const auto& kv : kmer_counts) {
       ++hist[kv.second];          // kv.second is the multiplicity
@@ -1181,11 +1184,11 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
       auto count = val->second;
       if (count <= (het_peak_ / 4) * fraction_) {
         return set_top2(value, 3);  // Low frequency
-      } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ * 1.5) * fraction_) {
+      } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
         return set_top2(value, 0);  // Medium frequency
-      } else if (count > (het_peak_ * 1.5) * fraction_ && count < (hom_peak_ * 1.5) * fraction_) {
+      } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
         return set_top2(value, 1);  // High frequency
-      } else if (count >= (hom_peak_ * 1.5) * fraction_) {
+      } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
         return set_top2(value, 2);  // Very high frequency
       }
     }

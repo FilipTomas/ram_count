@@ -214,9 +214,9 @@ int main(int argc, char** argv) {
 
     timer.Start();
 
-    minimizer_engine.Count(
-         targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
-    //minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
+   // minimizer_engine.Count(
+    //     targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
+    minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 
