@@ -580,29 +580,95 @@ std::vector<biosoup::Overlap> MinimizerEngine::Chain(
 }
 
   
-std::pair<std::size_t, std::size_t> find_hist_peak_ignoring_low(const std::map<std::size_t, std::size_t>& hist,
-                              std::size_t min_multiplicity /*=5*/,
-                              std::size_t max_multiplicity /*=0*/) {
-    if (hist.empty()) return std::make_pair(0u, 0u);
+static std::size_t get_nearest_height(const std::map<std::size_t, std::size_t>& hist,
+                                      std::size_t key) {
+  if (hist.empty()) return 0u;
+  std::map<std::size_t, std::size_t>::const_iterator it = hist.lower_bound(key);
+  if (it == hist.end()) {
+    // nearest is the last element
+    return hist.rbegin()->second;
+  }
+  if (it->first == key) return it->second;
+  if (it == hist.begin()) {
+    // nearest is the first element
+    return it->second;
+  }
+  // choose nearest between it (first >= key) and prev
+  std::map<std::size_t, std::size_t>::const_iterator prev = it; --prev;
+  std::size_t d_hi = (it->first  > key) ? (it->first  - key) : (key - it->first);
+  std::size_t d_lo = (key > prev->first) ? (key - prev->first) : (prev->first - key);
+  return (d_lo <= d_hi) ? prev->second : it->second;
+};
 
-    std::map<std::size_t, std::size_t>::const_iterator it  = hist.lower_bound(min_multiplicity);
-    std::map<std::size_t, std::size_t>::const_iterator end = hist.end();
-    if (max_multiplicity > 0) {
-      end = hist.upper_bound(max_multiplicity); // first > max
+
+std::pair<std::size_t, std::size_t>
+find_hist_peak_ignoring_low(const std::map<std::size_t, std::size_t>& hist,
+                            std::size_t min_multiplicity /*=5*/,
+                            std::size_t max_multiplicity /*=0*/) {
+  if (hist.empty()) return std::make_pair(0u, 0u);
+
+  std::map<std::size_t, std::size_t>::const_iterator it  = hist.lower_bound(min_multiplicity);
+  std::map<std::size_t, std::size_t>::const_iterator end = hist.end();
+  if (max_multiplicity > 0) {
+    end = hist.upper_bound(max_multiplicity); // first key > max
+  }
+  if (it == end) return std::make_pair(0u, 0u);
+
+  // 1) find max height within the allowed range
+  std::size_t peak_depth  = 0;
+  std::size_t peak_height = 0;
+  for (; it != end; ++it) {
+    if (it->second > peak_height) {
+      peak_height = it->second;
+      peak_depth  = it->first;
     }
+  }
 
-    if (it == end) return std::make_pair(0u, 0u);
+  // 2) probe at 1/2x and 2x depths (nearest existing bins)
+  if (peak_depth > 0) {
+    const std::size_t half_depth   = peak_depth / 2;              // floor
+    const std::size_t double_depth = (peak_depth > (SIZE_MAX/2))  // guard overflow
+                                     ? SIZE_MAX
+                                     : (peak_depth * 2);
 
-    std::size_t peak_depth  = 0;
-    std::size_t peak_height = 0;
+    // Respect provided min/max when comparing
+    bool half_ok   = (half_depth   >= min_multiplicity) && ((max_multiplicity == 0) || (half_depth   <= max_multiplicity));
+    bool double_ok = (double_depth >= min_multiplicity) && ((max_multiplicity == 0) || (double_depth <= max_multiplicity));
 
-    for (; it != end; ++it) {
-      if (it->second > peak_height) {
-        peak_height = it->second;
-        peak_depth  = it->first;
+    std::size_t h_half   = half_ok   ? get_nearest_height(hist, half_depth)   : 0u;
+    std::size_t h_double = double_ok ? get_nearest_height(hist, double_depth) : 0u;
+
+    // If 2x side looks stronger than 1/2x, move the peak there
+    if (double_ok && (h_double > h_half)) {
+      // set to the *nearest* existing bin around 2x (already used by get_nearest_height)
+      // pick the exact key of that nearest bin:
+      // we need its key too; re-derive it with a small helper:
+
+      // find nearest key (not just height)
+      std::map<std::size_t, std::size_t>::const_iterator dit = hist.lower_bound(double_depth);
+      std::size_t chosen_key = 0;
+      if (dit == hist.end()) {
+        chosen_key = hist.rbegin()->first;
+      } else if (dit->first == double_depth) {
+        chosen_key = dit->first;
+      } else if (dit == hist.begin()) {
+        chosen_key = dit->first;
+      } else {
+        std::map<std::size_t, std::size_t>::const_iterator prev = dit; --prev;
+        std::size_t d_hi = (dit->first  > double_depth) ? (dit->first  - double_depth) : (double_depth - dit->first);
+        std::size_t d_lo = (double_depth > prev->first) ? (double_depth - prev->first) : (prev->first - double_depth);
+        chosen_key = (d_lo <= d_hi) ? prev->first : dit->first;
+      }
+
+      // update peak if chosen_key is still in allowed range
+      if (chosen_key >= min_multiplicity && (max_multiplicity == 0 || chosen_key <= max_multiplicity)) {
+        peak_depth  = chosen_key;
+        peak_height = hist.find(chosen_key)->second;
       }
     }
-    return std::make_pair(peak_depth, peak_height);
+  }
+
+  return std::make_pair(peak_depth, peak_height);
 };
 
 void MinimizerEngine::Count(
