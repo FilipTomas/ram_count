@@ -20,7 +20,8 @@ MinimizerEngine::MinimizerEngine(
     std::uint32_t chain,
     std::uint32_t matches,
     std::uint32_t gap,
-    double fraction)
+    double fraction,
+    std::uint32_t cov)
   : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
   , w_(w)
   , bandwidth_(bandwidth)
@@ -32,6 +33,7 @@ MinimizerEngine::MinimizerEngine(
   , thread_pool_(thread_pool ? thread_pool
                              : std::make_shared<thread_pool::ThreadPool>(1))
   , fraction_(fraction)
+  , cov_(cov)
 {}
 
 std::uint32_t MinimizerEngine::Index::Find(
@@ -717,21 +719,30 @@ void MinimizerEngine::Count(
   };
   kmers_file.close();
 
-  for (const auto& kv : kmer_counts) {
-      ++hist[kv.second];          // kv.second is the multiplicity
+  if(cov_ == 0){
+    for (const auto& kv : kmer_counts) {
+        ++hist[kv.second];          // kv.second is the multiplicity
+    }
+
+    
+    std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(hist, 3, 100);
+    
+    hom_peak_ = ph.first/fraction;
+    het_peak_ = hom_peak_/2;
+
+    std::cerr << "[ram::] "
+              << "hom peak ≈ " << hom_peak_ 
+              << ", het peak ≈ " << het_peak_ 
+              << '\n';
   }
-
-
-  std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(hist, 3, 100);
-  
-  hom_peak_ = ph.first/fraction;
-  het_peak_ = hom_peak_/2;
-
-  std::cerr << "[ram::] "
-            << "hom peak ≈ " << hom_peak_ 
-            << ", het peak ≈ " << het_peak_ 
-            << '\n';
-
+    else{
+      hom_peak_ = cov_*2;
+      het_peak_ = cov_;
+      std::cerr << "[ram::] "
+              << "hom peak set to " << hom_peak_ 
+              << ", het peak set to " << het_peak_ 
+              << '\n';
+  }
   
   kmer_counts_ = kmer_counts;  // Store kmer counts for later use
 
@@ -1178,22 +1189,22 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
 
 
   auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
-    auto val = kmer_counts_.find(set_top2(value, 0));
-    //auto val = kmer_counts_.find(value);
-    if (val != kmer_counts_.end()) {
-      auto count = val->second;
-      if (count <= (het_peak_ / 4) * fraction_) {
-        return set_top2(value, 3);  // Low frequency
-      } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
-        return set_top2(value, 0);  // Medium frequency
-      } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
-        return set_top2(value, 1);  // High frequency
-      } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
-        return set_top2(value, 2);  // Very high frequency
-      }
-    }
-    return set_top2(value, 3);  // Default to low frequency
-   // return set_top2(value, 0);  // Default to medium frequency
+    // auto val = kmer_counts_.find(set_top2(value, 0));
+    // //auto val = kmer_counts_.find(value);
+    // if (val != kmer_counts_.end()) {
+    //   auto count = val->second;
+    //   if (count <= (het_peak_ / 4) * fraction_) {
+    //     return set_top2(value, 3);  // Low frequency
+    //   } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
+    //     return set_top2(value, 0);  // Medium frequency
+    //   } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
+    //     return set_top2(value, 1);  // High frequency
+    //   } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
+    //     return set_top2(value, 2);  // Very high frequency
+    //   }
+    // }
+   // return set_top2(value, 3);  // Default to low frequency
+    return set_top2(value, 0);  // Default to medium frequency
   };
 
   std::deque<Kmer> window;

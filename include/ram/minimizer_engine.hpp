@@ -25,7 +25,8 @@ class MinimizerEngine {
       std::uint32_t chain = 4,
       std::uint32_t matches = 100,
       std::uint32_t gap = 10000,
-      double fraction = 0.2);
+      double fraction = 0.2, 
+      std::uint32_t cov = 25);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
   MinimizerEngine& operator=(const MinimizerEngine&) = delete;
@@ -234,6 +235,7 @@ private:
   std::uint32_t hom_peak_;
   std::uint32_t hom_std_ = 25;  // peak of homogeneity in the minimizer
   std::uint32_t err_peak_ = 2;
+  std::uint32_t cov_ = 0;
   std::unordered_map<std::uint64_t, std::size_t> kmer_counts_;
   double fraction_ = 0.2;
 };

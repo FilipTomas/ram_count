@@ -27,6 +27,7 @@ static struct option options[] = {
   {"gap", required_argument, nullptr, 'g'},
   {"minhash", no_argument, nullptr, 'M'},
   {"fraction", required_argument, nullptr, 'F'},
+  {"coverage", required_argument, nullptr, 'C'},
   {"threads", required_argument, nullptr, 't'},
   {"version", no_argument, nullptr, 'v'},
   {"help", no_argument, nullptr, 'h'},
@@ -101,8 +102,11 @@ void Help() {
       "    --minhash\n"
       "      use only a portion of all minimizers\n"
       "    --fraction <float>\n"
-      "       default: 0.2"
-      "       fraction of reads used to count kmers"
+      "       default: 0.2\n"
+      "       fraction of reads used to count kmers\n"
+      "    -C <int>\n"
+      "      default: 0\n"
+      "      expected haploid coverage of the genome\n"
       "    -t, --threads <int>\n"
       "      default: 1\n"
       "      number of threads\n"
@@ -121,6 +125,7 @@ int main(int argc, char** argv) {
   std::uint32_t chain = 4;
   std::uint32_t matches = 100;
   std::uint32_t gap = 10000;
+  std::uint32_t cov = 0;
   double frequency = 0.001;
   bool minhash = false;
   float fraction = 0.2;
@@ -128,7 +133,7 @@ int main(int argc, char** argv) {
 
   std::vector<std::string> input_paths;
 
-  const char* optstr = "k:w:f:t:h";
+  const char* optstr = "k:w:f:t:h:C";
   char arg;
   while ((arg = getopt_long(argc, argv, optstr, options, nullptr)) != -1) {
     switch (arg) {
@@ -142,6 +147,7 @@ int main(int argc, char** argv) {
       case 'M': minhash = true; break;
       case 't': num_threads = std::atoi(optarg); break;
       case 'F': fraction = std::atof(optarg); break;
+      case 'C': cov = std::atoi(optarg); break;
       case 'v': std::cout << VERSION << std::endl; return 0;
       case 'h': Help(); return 0;
       default: return 1;
@@ -189,7 +195,8 @@ int main(int argc, char** argv) {
       chain,
       matches,
       gap,
-      fraction};
+      fraction,
+      cov};
 
   biosoup::Timer timer{};
 
@@ -216,7 +223,7 @@ int main(int argc, char** argv) {
 
    // minimizer_engine.Count(
     //     targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
-    minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
+   // minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 
