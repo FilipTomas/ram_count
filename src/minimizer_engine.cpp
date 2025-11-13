@@ -2,7 +2,7 @@
 
 #include "ram/minimizer_engine.hpp"
 #include "ram/gmm.hpp"
-
+//#include "ram/read_rec.hpp"
 #include <deque>
 #include <stdexcept>
 #include <iostream>
@@ -10,7 +10,19 @@
 #include <map>
 #include <fstream>
 
+
 namespace ram {
+
+static const std::size_t SHARDS = 128;
+
+struct GlobalShard {
+  std::mutex m;
+  std::unordered_map<std::uint64_t, std::uint64_t> counts;
+  GlobalShard() {
+    counts.max_load_factor(0.7f);
+    counts.reserve(1u << 18); // tweak based on dataset
+  }
+};
 
 MinimizerEngine::MinimizerEngine(
     std::shared_ptr<thread_pool::ThreadPool> thread_pool,
@@ -82,7 +94,7 @@ void MinimizerEngine::Minimize(
       }
       for (auto& it : futures) {
         for (const auto& jt : it.get()) {
-          ++kmer_counts[jt.value];
+       //   ++kmer_counts[jt.value];
           auto& m = minimizers[jt.value & mask];
           if (m.capacity() == m.size()) {
             m.reserve(m.capacity() * 1.5);
@@ -101,12 +113,12 @@ void MinimizerEngine::Minimize(
   };
 
 
-  std::ofstream minimizer_file("minimizer_counts.txt");
-  for(const auto& it : kmer_counts){
-      std::uint64_t stored_key = set_top2(it.first,0);
-      minimizer_file << stored_key << "\t" << it.second << std::endl;
-    }
-  minimizer_file.close();
+  // std::ofstream minimizer_file("minimizer_counts.txt");
+  // for(const auto& it : kmer_counts){
+  //     std::uint64_t stored_key = set_top2(it.first,0);
+  //     minimizer_file << stored_key << "\t" << it.second << std::endl;
+  //   }
+  // minimizer_file.close();
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
@@ -627,7 +639,9 @@ find_hist_peak_ignoring_low(const std::map<std::size_t, std::size_t>& hist,
       peak_depth  = it->first;
     }
   }
-
+  return std::make_pair(peak_depth, peak_height);
+}
+/*
   // 2) probe at 1/2x and 2x depths (nearest existing bins)
   if (peak_depth > 0) {
     const std::size_t half_depth   = peak_depth / 2;              // floor
@@ -674,15 +688,18 @@ find_hist_peak_ignoring_low(const std::map<std::size_t, std::size_t>& hist,
 
   return std::make_pair(peak_depth, peak_height);
 };
+*/
 
 void MinimizerEngine::Count(
-      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
-      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator last,
       float fraction,
       bool minhash) {
   if (first >= last) {
       return;
     }
+  std::cerr << "[ram::] Counting k-mers to estimate coverage peaks...\n";
+
   std::unordered_map<std::uint64_t, std::size_t> kmer_counts;
   std::vector<std::vector<Kmer>> minimizers(index_.size());
   {
@@ -690,40 +707,260 @@ void MinimizerEngine::Count(
 
     while (first != last) {
       std::size_t batch_size = 0;
-      std::vector<std::future<std::vector<Kmer>>> futures;
+      std::vector<std::future<void>> futures;
       for (; first != last && batch_size < 50000000; ++first) {
-        batch_size += (*first)->inflated_len;
+        batch_size += (*first)->seq->inflated_len;
         futures.emplace_back(thread_pool_->Submit(
-            [&] (decltype(first) it) -> std::vector<Kmer> {
-              return CountKmersAbove31(*it);
+            [&] (decltype(first) it) -> void {
+              CountKmersAbove31(*it);
             },
             first));
       }
       for (auto& it : futures) {
-        for (const auto& jt : it.get()) {
-          ++kmer_counts[jt.value];
-          auto& m = minimizers[jt.value & mask];
-          if (m.capacity() == m.size()) {
-            m.reserve(m.capacity() * 1.5);
-          }
-          m.emplace_back(jt);
-        }
+       it.wait();
       }
     }
   }
-  std::map<std::size_t, std::size_t> hist;
+  std::cerr << "[ram::] Finished counting k-mers.\n";
 
-  std::ofstream kmers_file("kmers.txt");
-  for (const auto& kv : kmer_counts){
-    kmers_file << kv.first << "\t" << kv.second << std::endl;
+  // std::ofstream kmers_file("kmers.txt");
+  // for (const auto& kv : kmer_counts){
+  //   kmers_file << kv.first << "\t" << kv.second << std::endl;
+  // };
+  // kmers_file.close();
+
+  // if(cov_ == 0){
+  //   for (const auto& kv : kmer_counts) {
+  //       ++hist[kv.second];          // kv.second is the multiplicity
+  //   }
+
+
+ // exit(0);
+}
+
+
+
+/*std::map<std::uint64_t, std::uint64_t> MinimizerEngine::HistFastExact(
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator last) {
+
+  std::cerr << "[ram::] Building k-mer histogram to estimate coverage peaks (fast exact)...\n";
+  // 1) Parallel sharded merge: kmer -> total multiplicity
+  std::vector<GlobalShard> shards(SHARDS);
+
+  const std::ptrdiff_t Nreads = std::distance(first, last);
+  const std::size_t T = std::max<std::size_t>(1,
+                      thread_pool_ ? std::thread::hardware_concurrency() : 1);
+
+  const std::ptrdiff_t chunk = (Nreads + T - 1) / T;
+  std::vector<std::future<void> > futs;
+  futs.reserve(T);
+
+  typedef std::vector<std::unique_ptr<ReadRec>>::const_iterator It;
+
+  for (std::size_t t = 0; t < T; ++t) {
+    It b = first; std::advance(b, std::min<std::ptrdiff_t>(Nreads, t * chunk));
+    It e = first; std::advance(e, std::min<std::ptrdiff_t>(Nreads, (t+1) * chunk));
+    if (b == e) break;
+
+    futs.emplace_back(thread_pool_->Submit([b,e, &shards]() {
+      for (It it = b; it != e; ++it) {
+        const ReadRec* r = it->get();
+        if (!r) continue;
+        // Merge this read's counts into shards
+        for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator kv = r->kmer_counts.begin();
+             kv != r->kmer_counts.end(); ++kv) {
+          const std::uint64_t key = kv->first;
+          const std::uint64_t val = kv->second;
+          const std::size_t idx = static_cast<std::size_t>(key) & (SHARDS - 1);
+          GlobalShard& sh = shards[idx];
+          {
+            std::lock_guard<std::mutex> lk(sh.m);
+            sh.counts[key] += val;
+          }
+        }
+      }
+    }));
+  }
+  for (std::size_t i = 0; i < futs.size(); ++i) futs[i].wait();
+
+  std::cerr << "[ram::] Merged k-mer counts from all threads.\n";
+
+  // 2) Build per-shard histograms in parallel: multiplicity -> #distinct k-mers
+  struct HistShard { std::unordered_map<std::uint64_t, std::uint64_t> h; };
+  std::vector<HistShard> H(SHARDS);
+
+  futs.clear();
+  futs.reserve(SHARDS);
+  for (std::size_t i = 0; i < SHARDS; ++i) {
+    futs.emplace_back(thread_pool_->Submit([i,&shards,&H]() {
+      const std::unordered_map<std::uint64_t, std::uint64_t>& g = shards[i].counts;
+      std::unordered_map<std::uint64_t, std::uint64_t>& h = H[i].h;
+      h.max_load_factor(0.7f);
+      h.reserve(g.size());
+      for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator it = g.begin();
+           it != g.end(); ++it) {
+        ++h[it->second];
+      }
+    }));
+  }
+  for (std::size_t i = 0; i < futs.size(); ++i) futs[i].wait();
+
+  std::cerr << "[ram::] Built per-shard histograms.\n";
+
+  // 3) Merge hist shards
+  std::unordered_map<std::uint64_t, std::uint64_t> hist_u;
+  std::size_t est_bins = 0;
+  for (std::size_t i = 0; i < SHARDS; ++i) est_bins += H[i].h.size();
+  hist_u.max_load_factor(0.7f);
+  hist_u.reserve(est_bins);
+
+  for (std::size_t i = 0; i < SHARDS; ++i) {
+    for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator it = H[i].h.begin();
+         it != H[i].h.end(); ++it) {
+      hist_u[it->first] += it->second;
+    }
+  }
+  std::cerr << "[ram::] Merged histogram shards. Printing isus te jebo\n";
+
+  // Ordered result (if you don't need ordering, keep hist_u)
+  std::map<std::uint64_t, std::uint64_t> hist(hist_u.begin(), hist_u.end());
+
+  for(auto it = hist.begin(); it != hist.end(); ++it){
+    std::cout << it->first << "\t" << it->second << '\n';
+  }
+  return hist;
+}
+  */
+
+std::map<std::uint64_t, std::uint64_t> MinimizerEngine::HistFastExact(
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator last)
+{
+  struct GlobalShard {
+    std::mutex m;
+    std::unordered_map<std::uint64_t, std::uint64_t> counts; // kmer -> total multiplicity
+    GlobalShard() {
+      counts.max_load_factor(0.7f);
+      counts.reserve(1u << 18); // tweak based on dataset size
+    }
   };
-  kmers_file.close();
 
-  if(cov_ == 0){
-    for (const auto& kv : kmer_counts) {
-        ++hist[kv.second];          // kv.second is the multiplicity
+  if (first == last) return {};
+
+  std::cerr << "[ram::] Building k-mer histogram to estimate coverage peaks (fast exact)...\n";
+  // ---- 1) Parallel sharded merge of per-read maps into global counts ----
+  std::vector<GlobalShard> shards(SHARDS);
+
+  typedef std::vector<std::unique_ptr<ReadRec>>::const_iterator It;
+  const std::ptrdiff_t Nreads = std::distance(first, last);
+
+  // Number of worker chunks = #threads (fallback to HW concurrency if unknown)
+  std::size_t T = 1;
+  if (thread_pool_) {
+    unsigned hc = std::thread::hardware_concurrency();
+    T = hc ? static_cast<std::size_t>(hc) : 1u;
+  }
+
+  const std::ptrdiff_t chunk = (Nreads + static_cast<std::ptrdiff_t>(T) - 1) / static_cast<std::ptrdiff_t>(T);
+  std::vector<std::future<void>> futs;
+  futs.reserve(T);
+
+  for (std::size_t t = 0; t < T; ++t) {
+    It b = first; std::advance(b, std::min<std::ptrdiff_t>(Nreads, static_cast<std::ptrdiff_t>(t) * chunk));
+    It e = first; std::advance(e, std::min<std::ptrdiff_t>(Nreads, static_cast<std::ptrdiff_t>(t + 1) * chunk));
+    if (b == e) break;
+
+    futs.emplace_back(thread_pool_->Submit([b, e, &shards]() {
+      for (It it = b; it != e; ++it) {
+        const ReadRec* r = it->get();
+        if (!r) continue;
+        for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator kv = r->kmer_counts.begin();
+             kv != r->kmer_counts.end(); ++kv) {
+          const std::uint64_t key = kv->first;
+          const std::uint64_t val = kv->second;
+          const std::size_t idx = static_cast<std::size_t>(key) & (shards.size() - 1); // SHARDS is pow2
+          GlobalShard& sh = shards[idx];
+          std::lock_guard<std::mutex> lk(sh.m);
+          sh.counts[key] += val;
+        }
+      }
+    }));
+  }
+
+  for (std::size_t i = 0; i < futs.size(); ++i) futs[i].wait();
+
+  std::cerr << "[ram::] Merged k-mer counts from all threads.\n";
+  // ---- 2) SAVE merged counts into member kmer_counts_ (single map) ----
+  // Estimate total distinct kmers to reserve once.
+  std::size_t est_total = 0;
+  for (std::size_t i = 0; i < shards.size(); ++i) est_total += shards[i].counts.size();
+
+  kmer_counts_.clear();
+  kmer_counts_.max_load_factor(0.7f);           // optional: fewer collisions
+  kmer_counts_.reserve(est_total);
+
+  for (std::size_t i = 0; i < shards.size(); ++i) {
+    for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator it = shards[i].counts.begin();
+         it != shards[i].counts.end(); ++it) {
+      // cast to size_t to match your member type
+      kmer_counts_[it->first] += static_cast<std::size_t>(it->second);
+    }
+  }
+
+  std::cerr << "[ram::] Estimating coverage peaks.\n";
+
+  // ---- 3) Build and return histogram from the merged member map ----
+  std::unordered_map<std::uint64_t, std::uint64_t> hist_u;
+  hist_u.max_load_factor(0.7f);
+  hist_u.reserve(kmer_counts_.size());
+
+  for (std::unordered_map<std::uint64_t, std::size_t>::const_iterator it = kmer_counts_.begin();
+       it != kmer_counts_.end(); ++it) {
+    ++hist_u[static_cast<std::uint64_t>(it->second)]; // multiplicity -> #kmers
+  }
+
+  std::map<std::uint64_t, std::uint64_t> final_ist = std::map<std::uint64_t, std::uint64_t>(hist_u.begin(), hist_u.end());
+  std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(final_ist, 3, 100);
+  hom_peak_ = ph.first;
+  het_peak_ = hom_peak_/2;
+
+  std::cerr << "[ram::] "
+            << "hom peak ≈ " << hom_peak_ 
+            << ", het peak ≈ " << het_peak_ 
+            << '\n';
+
+  // If you need ordering by multiplicity for output/analysis:
+  return std::map<std::uint64_t, std::uint64_t>(hist_u.begin(), hist_u.end());
+}
+
+void MinimizerEngine::Hist(
+  std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+  std::vector<std::unique_ptr<ReadRec>>::const_iterator last,
+  float fraction,
+  std::uint64_t total_bases
+){
+    std::cerr << "[ram::] Building k-mer histogram to estimate coverage peaks...\n";
+    std::unordered_map<std::uint64_t, std::uint64_t> global;
+    global.reserve(total_bases);
+    for (auto it = first; it != last; ++it) {
+      const auto& m = (*it)->kmer_counts;
+      for (const auto& kv : m) {
+        global[kv.first] += kv.second;
+      }
+    }
+    std::cerr << "[ram::] Merged k-mer counts from all threads.\n";
+
+    // 2) Build histogram: multiplicity -> number of distinct k-mers
+    std::map<std::uint64_t, std::uint64_t> hist;  // use 64-bit bins/values
+    for (const auto& kv : global) {
+      ++hist[kv.second];
     }
 
+    for(auto it = hist.begin(); it != hist.end(); ++it){
+      std::cout << it->first << "\t" << it->second << '\n';
+    }
+    exit(0);
     
     std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(hist, 3, 100);
     
@@ -734,17 +971,17 @@ void MinimizerEngine::Count(
               << "hom peak ≈ " << hom_peak_ 
               << ", het peak ≈ " << het_peak_ 
               << '\n';
-  }
-    else{
-      hom_peak_ = cov_*2;
-      het_peak_ = cov_;
-      std::cerr << "[ram::] "
-              << "hom peak set to " << hom_peak_ 
-              << ", het peak set to " << het_peak_ 
-              << '\n';
-  }
+  // }
+  //   else{
+  //     hom_peak_ = cov_*2;
+  //     het_peak_ = cov_;
+  //     std::cerr << "[ram::] "
+  //             << "hom peak set to " << hom_peak_ 
+  //             << ", het peak set to " << het_peak_ 
+  //             << '\n';
+  // }
   
-  kmer_counts_ = kmer_counts;  // Store kmer counts for later use
+  //kmer_counts_ = kmer_counts;  // Store kmer counts for later use
 
   // for(const auto& it : kmer_counts_){
   //   std::uint64_t stored_key = it.first;
@@ -762,7 +999,6 @@ void MinimizerEngine::Count(
   //   std::uint64_t actual_key = stored_key;
   //   std::cout << actual_key << "\t" << it.second << std::endl;
   // }
- // exit(0);
 }
 
 std::vector<MinimizerEngine::Kmer> MinimizerEngine::Count(
@@ -1045,10 +1281,11 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::Minimize_64(
   return dst;
 }
   
-std::vector<MinimizerEngine::Kmer> MinimizerEngine::CountKmersAbove31(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
-  if (sequence->inflated_len < k_) {
-    return {};
+void MinimizerEngine::CountKmersAbove31(
+    const std::unique_ptr<ReadRec>& sequence) const {
+  if (sequence->seq->inflated_len < k_) {
+    //return {};
+    return;
   }
   std::deque<Kmer> window;
 
@@ -1088,7 +1325,7 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::CountKmersAbove31(
     return set_top2(key, 0);  // For now, just return the value as is
   };
   //std::vector<MinimizerEngine::Kmer, std::uint32_t> kmer_counts;
-  std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
+  std::uint64_t id = static_cast<std::uint64_t>(sequence->seq->id) << 32;
   std::uint64_t is_stored = 1ULL << 63;
   std::vector<Kmer> dst;
   std::uint64_t kmer_lo = 0, kmer_hi = 0;
@@ -1097,9 +1334,9 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::CountKmersAbove31(
   std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
   std::uint32_t w_ph = 1;
 
-  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
-    std::uint64_t c = sequence->Code(i);
-
+  for (std::uint32_t i = 0; i < sequence->seq->inflated_len; ++i) {
+    std::uint64_t c = sequence->seq->Code(i);
+    
     // Forward k-mer
      if (k_ <= 32) {
       kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
@@ -1151,10 +1388,9 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::CountKmersAbove31(
       window_update(i - (k_ - 1U) - (w_ph - 1U) + 1);
     }
   }
-
-
-
-  return dst;
+  for(auto & it : dst){
+    sequence->kmer_counts[it.value] += 1;
+  }
 }
 std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
@@ -1189,22 +1425,22 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
 
 
   auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
-    // auto val = kmer_counts_.find(set_top2(value, 0));
-    // //auto val = kmer_counts_.find(value);
-    // if (val != kmer_counts_.end()) {
-    //   auto count = val->second;
-    //   if (count <= (het_peak_ / 4) * fraction_) {
-    //     return set_top2(value, 3);  // Low frequency
-    //   } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
-    //     return set_top2(value, 0);  // Medium frequency
-    //   } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
-    //     return set_top2(value, 1);  // High frequency
-    //   } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
-    //     return set_top2(value, 2);  // Very high frequency
-    //   }
-    // }
-   // return set_top2(value, 3);  // Default to low frequency
-    return set_top2(value, 0);  // Default to medium frequency
+    auto val = kmer_counts_.find(set_top2(value, 0));
+    //auto val = kmer_counts_.find(value);
+    if (val != kmer_counts_.end()) {
+      auto count = val->second;
+      if (count <= (het_peak_ / 4) * fraction_) {
+        return set_top2(value, 3);  // Low frequency
+      } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
+        return set_top2(value, 0);  // Medium frequency
+      } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
+        return set_top2(value, 1);  // High frequency
+      } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
+        return set_top2(value, 2);  // Very high frequency
+      }
+    }
+  return set_top2(value, 3);  // Default to low frequency
+  // return set_top2(value, 0);  // Default to medium frequency
   };
 
   std::deque<Kmer> window;

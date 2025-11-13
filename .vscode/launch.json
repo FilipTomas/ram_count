@@ -9,7 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/debug/bin/ram",
-            "args" : ["-t128", "/mnt/share1_Jabba/ftomas/reads/chr19/herro_corrected_lower_m/subsample/chr19.corrected.lower.m.25x.fasta", "/mnt/share1_Jabba/ftomas/reads/chr19/herro_corrected_lower_m/subsample/chr19.corrected.lower.m.25x.fasta"],
+            "args" : ["-t128", "/mnt/share1_Jabba/ftomas/reads/chr19/seqreq/subsample/chr19.5x.seqreq.fasta", "/mnt/share1_Jabba/ftomas/reads/chr19/seqreq/subsample/chr19.5x.seqreq.fasta"],
         
             "cwd": "${workspaceFolder}/debug/bin/",
             "environment": [],

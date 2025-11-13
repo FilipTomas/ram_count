@@ -8,10 +8,12 @@
 #include <vector>
 #include <unordered_map>
 #include <utility>
+#include <map>
 
 #include "biosoup/nucleic_acid.hpp"
 #include "biosoup/overlap.hpp"
 #include "thread_pool/thread_pool.hpp"
+#include "read_rec.hpp"
 
 namespace ram {
 
@@ -44,11 +46,21 @@ class MinimizerEngine {
       bool minhash = false);
 
   void Count(
-      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
-      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator last,
       float fraction,
       bool minhash = false);  // count k-mers in preconstructed minimizer index
 
+  void Hist(
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+      std::vector<std::unique_ptr<ReadRec>>::const_iterator last,
+      float fraction,
+      std::uint64_t total_bases
+  );
+
+  std::map<std::uint64_t, std::uint64_t> HistFastExact(
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
+    std::vector<std::unique_ptr<ReadRec>>::const_iterator last);
   // void CountKmersAbove31(
   //     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
   //     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
@@ -195,8 +207,8 @@ private:
   std::vector<Kmer> Count(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
-  std::vector<Kmer> CountKmersAbove31(
-      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+ void CountKmersAbove31(
+      const std::unique_ptr<ReadRec>& sequence) const;
 
   std::vector<Kmer> MinimizeByCount(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;

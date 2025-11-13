@@ -12,6 +12,7 @@
 #include "biosoup/timer.hpp"
 
 #include "ram/minimizer_engine.hpp"
+//#include "ram/read_rec.hpp"
 
 std::atomic<std::uint32_t> biosoup::NucleicAcid::num_objects{0};
 
@@ -125,10 +126,10 @@ int main(int argc, char** argv) {
   std::uint32_t chain = 4;
   std::uint32_t matches = 100;
   std::uint32_t gap = 10000;
-  std::uint32_t cov = 0;
+  std::uint32_t cov = 25;
   double frequency = 0.001;
   bool minhash = false;
-  float fraction = 0.2;
+  float fraction = 1;
   std::uint32_t num_threads = 1;
 
   std::vector<std::string> input_paths;
@@ -220,10 +221,30 @@ int main(int argc, char** argv) {
               << std::endl;
 
     timer.Start();
+    std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets2;
+    targets2.reserve(targets.size());
+    for (auto const& p : targets) {
+      // deep copy the object, keep original 'targets' untouched
+      targets2.emplace_back(new biosoup::NucleicAcid(*p));
+    }
 
-   // minimizer_engine.Count(
+  //  minimizer_engine.Count(
     //     targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
-   // minimizer_engine.Count(targets.begin(), targets.end(), fraction, minhash);
+    std::vector<std::unique_ptr<ReadRec>> targets_ext;
+    targets_ext.reserve(targets2.size());
+    for (auto& p : targets2) {
+      // move the parsed nucleic acid into the record
+      std::unique_ptr<ReadRec> rec(new ReadRec{std::move(p), {}});
+      targets_ext.emplace_back(std::move(rec));
+    }
+    std::uint64_t total_bases = 0;
+    for (const auto& it : targets_ext) {
+      total_bases += it->seq->inflated_len;
+    }
+    std::cerr << "[ram::] total bases in targets: " << total_bases << std::endl;
+    minimizer_engine.Count(targets_ext.begin(), targets_ext.end(), fraction, minhash);
+    minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.end());
+    //minimizer_engine.Hist(targets_ext.begin(), targets_ext.end(), fraction, total_bases);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 
@@ -271,7 +292,7 @@ int main(int argc, char** argv) {
       std::uint64_t lhs_offset = sequences.front()->id;
       for (auto& it : futures) {
         for (const auto& jt : it.get()) {
-          overlaps.emplace_back(jt);
+         // overlaps.emplace_back(jt);
           std::cout << sequences[jt.lhs_id - lhs_offset]->name << "\t"
                     << sequences[jt.lhs_id - lhs_offset]->inflated_len << "\t"
                     << jt.lhs_begin << "\t"
