@@ -29,6 +29,7 @@ static struct option options[] = {
   {"minhash", no_argument, nullptr, 'M'},
   {"fraction", required_argument, nullptr, 'F'},
   {"coverage", required_argument, nullptr, 'C'},
+  {"minimizers", no_argument, nullptr, 'N'},
   {"threads", required_argument, nullptr, 't'},
   {"version", no_argument, nullptr, 'v'},
   {"help", no_argument, nullptr, 'h'},
@@ -126,15 +127,16 @@ int main(int argc, char** argv) {
   std::uint32_t chain = 4;
   std::uint32_t matches = 100;
   std::uint32_t gap = 10000;
-  std::uint32_t cov = 25;
+  std::uint32_t cov = 0;
   double frequency = 0.001;
   bool minhash = false;
   float fraction = 1;
+  bool use_minimizers = false;
   std::uint32_t num_threads = 1;
 
   std::vector<std::string> input_paths;
 
-  const char* optstr = "k:w:f:t:h:C";
+  const char* optstr = "k:w:f:t:h:C:N";
   char arg;
   while ((arg = getopt_long(argc, argv, optstr, options, nullptr)) != -1) {
     switch (arg) {
@@ -149,6 +151,7 @@ int main(int argc, char** argv) {
       case 't': num_threads = std::atoi(optarg); break;
       case 'F': fraction = std::atof(optarg); break;
       case 'C': cov = std::atoi(optarg); break;
+      case 'N': use_minimizers = true; break;
       case 'v': std::cout << VERSION << std::endl; return 0;
       case 'h': Help(); return 0;
       default: return 1;
@@ -197,7 +200,8 @@ int main(int argc, char** argv) {
       matches,
       gap,
       fraction,
-      cov};
+      cov,
+      use_minimizers};
 
   biosoup::Timer timer{};
 
@@ -238,13 +242,11 @@ int main(int argc, char** argv) {
       targets_ext.emplace_back(std::move(rec));
     }
     std::uint64_t total_bases = 0;
-    for (const auto& it : targets_ext) {
-      total_bases += it->seq->inflated_len;
+
+    if (!use_minimizers){
+      minimizer_engine.Count(targets_ext.begin(), targets_ext.end(), fraction, minhash);
+      minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.end());
     }
-    std::cerr << "[ram::] total bases in targets: " << total_bases << std::endl;
-    minimizer_engine.Count(targets_ext.begin(), targets_ext.end(), fraction, minhash);
-    minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.end());
-    //minimizer_engine.Hist(targets_ext.begin(), targets_ext.end(), fraction, total_bases);
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 

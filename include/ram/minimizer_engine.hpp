@@ -27,8 +27,9 @@ class MinimizerEngine {
       std::uint32_t chain = 4,
       std::uint32_t matches = 100,
       std::uint32_t gap = 10000,
-      double fraction = 0.2, 
-      std::uint32_t cov = 25);
+      double fraction = 1, 
+      std::uint32_t cov = 0,
+      bool use_minimizers = false);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
   MinimizerEngine& operator=(const MinimizerEngine&) = delete;
@@ -58,7 +59,7 @@ class MinimizerEngine {
       std::uint64_t total_bases
   );
 
-  std::map<std::uint64_t, std::uint64_t> HistFastExact(
+ void HistFastExact(
     std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
     std::vector<std::unique_ptr<ReadRec>>::const_iterator last);
   // void CountKmersAbove31(
@@ -249,7 +250,8 @@ private:
   std::uint32_t err_peak_ = 2;
   std::uint32_t cov_ = 0;
   std::unordered_map<std::uint64_t, std::size_t> kmer_counts_;
-  double fraction_ = 0.2;
+  double fraction_ = 1;
+  bool use_minimizers_ = false;
 };
 
 }  // namespace ram
