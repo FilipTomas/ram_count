@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets;
     try {
-      targets = tparser->Parse(1ULL << 32);
+      targets = tparser->Parse(-1);
     } catch (std::invalid_argument& exception) {
       std::cerr << exception.what() << std::endl;
       return 1;
@@ -225,28 +225,27 @@ int main(int argc, char** argv) {
               << std::endl;
 
     timer.Start();
-    std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets2;
-    targets2.reserve(targets.size());
-    for (auto const& p : targets) {
-      // deep copy the object, keep original 'targets' untouched
-      targets2.emplace_back(new biosoup::NucleicAcid(*p));
-    }
-
-  //  minimizer_engine.Count(
-    //     targets.begin(), targets.begin() + static_cast<std::ptrdiff_t>(targets.size()*fraction), fraction, minhash);
-    std::vector<std::unique_ptr<ReadRec>> targets_ext;
-    targets_ext.reserve(targets2.size());
-    for (auto& p : targets2) {
-      // move the parsed nucleic acid into the record
-      std::unique_ptr<ReadRec> rec(new ReadRec{std::move(p), {}});
-      targets_ext.emplace_back(std::move(rec));
-    }
-    std::uint64_t total_bases = 0;
-
     if (!use_minimizers){
-      minimizer_engine.Count(targets_ext.begin(), targets_ext.end(), fraction, minhash);
-      minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.end());
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets2;
+      targets2.reserve(targets.size());
+      for (auto const& p : targets) {
+        // deep copy the object, keep original 'targets' untouched
+        targets2.emplace_back(new biosoup::NucleicAcid(*p));
+      }
+      std::vector<std::unique_ptr<ReadRec>> targets_ext;
+      targets_ext.reserve(targets2.size());
+      for (auto& p : targets2) {
+        // move the parsed nucleic acid into the record
+        std::unique_ptr<ReadRec> rec(new ReadRec{std::move(p), {}});
+        targets_ext.emplace_back(std::move(rec));
+      }
+      minimizer_engine.Count(targets_ext.begin(), targets_ext.begin() + static_cast<std::ptrdiff_t>(targets_ext.size()*fraction), fraction, minhash);
+      minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.begin() + static_cast<std::ptrdiff_t>(targets_ext.size()*fraction));
     }
+
+    std::cerr << "[ram::] counted kmers in targets "
+              << std::fixed << timer.Stop() << "s"
+              << std::endl;
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 

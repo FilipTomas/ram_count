@@ -65,6 +65,45 @@ std::uint32_t MinimizerEngine::Index::Find(
   return static_cast<std::uint32_t>(it->second);
 }
 
+void MinimizerEngine::InitShards(std::size_t shard_pow2) {
+  // enforce power-of-two; fallback to 128
+  if ((shard_pow2 & (shard_pow2 - 1)) != 0) shard_pow2 = 128;
+
+  shards_.clear();
+  shards_.resize(shard_pow2);  // OK for deque (won't try to move mutex)
+
+  for (std::size_t i = 0; i < shards_.size(); ++i) {
+    shards_[i].counts.max_load_factor(0.7f);
+    shards_[i].counts.reserve(1u << 18); // tune to dataset
+  }
+}
+
+void MinimizerEngine::FreezeShardsToVectors() {
+  for (std::size_t i = 0; i < shards_.size(); ++i) {
+    GlobalShard& sh = shards_[i];
+    sh.frozen.clear();
+    sh.frozen.reserve(sh.counts.size());
+    for (auto it = sh.counts.begin(); it != sh.counts.end(); ++it) {
+      sh.frozen.emplace_back(it->first, static_cast<std::size_t>(it->second));
+    }
+    std::sort(sh.frozen.begin(), sh.frozen.end(),
+              [](const std::pair<std::uint64_t,std::size_t>& a,
+                 const std::pair<std::uint64_t,std::size_t>& b){ return a.first < b.first; });
+    sh.counts.clear();
+    sh.counts.rehash(0);
+  }
+}
+
+  std::size_t MinimizerEngine::FastKmerCount(std::uint64_t key) const {
+    if (shards_.empty()) return 0u;
+    const std::size_t idx = static_cast<std::size_t>(key) & (shards_.size() - 1);
+    const auto& vec = shards_[idx].frozen;
+    auto it = std::lower_bound(vec.begin(), vec.end(), key,
+      [](const std::pair<std::uint64_t,std::size_t>& a, std::uint64_t k){ return a.first < k; });
+    return (it != vec.end() && it->first == key) ? it->second : 0u;
+  }
+
+
 void MinimizerEngine::Minimize(
     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last,
@@ -75,6 +114,8 @@ void MinimizerEngine::Minimize(
     it.locator.clear();
   }
 
+  std::cerr << "[ram::MinimizerEngine::Minimize] constructing minimizer index..."
+            << std::endl;
   if (first >= last) {
     return;
   }
@@ -115,12 +156,12 @@ void MinimizerEngine::Minimize(
   };
 
 
-  // std::ofstream minimizer_file("minimizer_counts.txt");
-  // for(const auto& it : kmer_counts){
-  //     std::uint64_t stored_key = set_top2(it.first,0);
-  //     minimizer_file << stored_key << "\t" << it.second << std::endl;
-  //   }
-  // minimizer_file.close();
+  std::ofstream minimizer_file("minimizer_counts.txt");
+  for(const auto& it : kmer_counts){
+      std::uint64_t stored_key = set_top2(it.first,0);
+      minimizer_file << stored_key << "\t" << it.second << std::endl;
+    }
+  minimizer_file.close();
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
@@ -189,142 +230,40 @@ void MinimizerEngine::Minimize(
 }
 
 void MinimizerEngine::Filter(double frequency) {
-  if (!(0 <= frequency && frequency <= 1)) {
-    throw std::invalid_argument(
-        "[ram::MinimizerEngine::Filter] error: invalid frequency");
+  if (frequency <= 0) {
+    occurrence_ = -1;
+    return;
   }
 
-  // if (frequency == 0) {
-  //   occurrence_ = -1;
-  //   return;
-  // }
+  if(frequency >= 1.0){
+    occurrence_ = frequency;
+    return;
+  } else {
+    std::vector<std::uint32_t> occurrences;
+    for (const auto& it : index_) {
+      for (const auto& jt : it.locator) {
+        if (jt.first & 1) {
+          occurrences.emplace_back(1);
+        } else {
+          occurrences.emplace_back(static_cast<std::uint32_t>(jt.second));
+        }
+      }
+    }
 
-  // std::vector<std::uint32_t> occurrences;
-  // for (const auto& it : index_) {
-  //   for (const auto& jt : it.locator) {
-  //     if (jt.first & 1) {
-  //       occurrences.emplace_back(1);
-  //     } else {
-  //       occurrences.emplace_back(static_cast<std::uint32_t>(jt.second));
-  //     }
-  //   }
-  // }
+    if (occurrences.empty()) {
+      occurrence_ = -1;
+      return;
+    }
 
-  // if (occurrences.empty()) {
-  //   occurrence_ = -1;
-  //   return;
-  // }
-
-  // std::nth_element(
-  //     occurrences.begin(),
-  //     occurrences.begin() + (1 - frequency) * occurrences.size(),
-  //     occurrences.end());
-  // occurrence_ = occurrences[(1 - frequency) * occurrences.size()] + 1;
-  occurrence_ = 1000;
+    std::nth_element(
+        occurrences.begin(),
+        occurrences.begin() + (1 - frequency) * occurrences.size(),
+        occurrences.end());
+    occurrence_ = occurrences[(1 - frequency) * occurrences.size()] + 1;
+  }
   std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
 }
 
-
-// std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
-//     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-//     bool avoid_equal,
-//     bool avoid_symmetric,
-//     bool minhash,
-//     std::vector<std::uint32_t>* filtered) const {
-//   auto sketch = MinimizeRepetitiveByCount(sequence);
-//   if (sketch.empty()) {
-//     return std::vector<biosoup::Overlap>{};
-//   }
-
-//   std::vector<Match> matches;
-//   auto add_match = [&] (const Kmer& kmer, uint64_t origin) -> void {
-//     auto id = [] (std::uint64_t origin) -> std::uint32_t {
-//       return static_cast<std::uint32_t>(origin >> 32);
-//     };
-//     auto position = [] (std::uint64_t origin) -> std::uint32_t {
-//       return static_cast<std::uint32_t>(origin) >> 1;
-//     };
-//     auto strand = [] (std::uint64_t origin) -> bool {
-//       return origin & 1;
-//     };
-
-//     if (avoid_equal && sequence->id == id(origin)) {
-//       return;
-//     }
-//     if (avoid_symmetric && sequence->id > id(origin)) {
-//       return;
-//     }
-
-//     std::uint64_t rhs_id = id(origin);
-//     std::uint64_t strand_ = kmer.strand() == strand(origin);
-//     std::uint64_t lhs_pos = kmer.position();
-//     std::uint64_t rhs_pos = position(origin);
-//     std::uint64_t diagonal = !strand_ ?
-//         rhs_pos + lhs_pos :
-//         rhs_pos - lhs_pos + (3ULL << 30);
-
-//     matches.emplace_back(
-//         (((rhs_id << 1) | strand_) << 32) | diagonal,
-//         (lhs_pos << 32) | rhs_pos);
-//   };
-
-//   struct Hit {
-//     const Kmer* kmer;
-//     std::uint32_t n;
-//     const uint64_t* origins;
-
-//     Hit(const Kmer* kmer, std::uint32_t n, const uint64_t* origins)
-//         : kmer(kmer),
-//           n(n),
-//           origins(origins) {}
-
-//     bool operator<(const Hit& other) const {
-//       return n < other.n;
-//     }
-//   };
-//   std::vector<Hit> filtered_hits;
-
-//   std::uint64_t mask = index_.size() - 1;
-//   std::uint32_t prev = 0;
-
-//   sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
-
-//   for (const auto& kmer : sketch) {
-//     std::uint32_t i = kmer.value & mask;
-//     const uint64_t* origins = nullptr;
-//     auto n = index_[i].Find(kmer.value, &origins);
-//     if (n > occurrence_) {
-//       filtered_hits.emplace_back(&kmer, n, origins);
-//       if (filtered) {
-//         filtered->emplace_back(kmer.position());
-//       }
-//       continue;
-//     }
-
-//     // std::size_t rescuees = std::min(
-//     //     static_cast<std::size_t>(kmer.position() - prev) / bandwidth_,
-//     //     filtered_hits.size());
-//     // if (rescuees) {
-//     //   std::partial_sort(
-//     //       filtered_hits.begin(),
-//     //       filtered_hits.begin() + rescuees,
-//     //       filtered_hits.end());
-//     //   for (auto it = filtered_hits.begin(); rescuees; rescuees--, ++it) {
-//     //     for (; it->n; it->n--, ++it->origins) {
-//     //       add_match(*it->kmer, *it->origins);
-//     //     }
-//     //   }
-//     // }
-//     filtered_hits.clear();
-//     prev = kmer.position();
-
-//     for (; n; n--, ++origins) {
-//       add_match(kmer, *origins);
-//     }
-//   }
-
-//   return Chain(sequence->id, std::move(matches));
-// }
 
 std::vector<biosoup::Overlap> MinimizerEngine::Map(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
@@ -416,6 +355,39 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     //     }
     //   }
     // }
+    //filtered_hits.clear();
+    //prev = kmer.position();
+
+    // std::uint32_t curr_pos = kmer.position();
+
+    // // handle unsigned underflow safely
+    // std::uint32_t delta = (curr_pos >= prev) ? (curr_pos - prev) : 0;
+
+    // // turn distance into a count; guard bandwidth_ == 0
+    // std::size_t want = (bandwidth_ > 0) ? static_cast<std::size_t>(delta) / static_cast<std::size_t>(bandwidth_) : 0;
+
+    // std::size_t rescuees = std::min(want, filtered_hits.size());
+    // if (rescuees) {
+    //   // Bring the smallest-n rescuees to the front in O(n)
+    //   auto mid = filtered_hits.begin() + static_cast<std::ptrdiff_t>(rescuees);
+    //   std::nth_element(filtered_hits.begin(), mid, filtered_hits.end(),
+    //                   [](const Hit& a, const Hit& b){ return a.n < b.n; });
+
+    //   // Optionally sort just that rescued prefix for determinism (small cost)
+    //   std::sort(filtered_hits.begin(), mid,
+    //             [](const Hit& a, const Hit& b){ return a.n < b.n; });
+
+    //   // Emit matches for those rescuees
+    //   for (auto it = filtered_hits.begin(); it != mid; ++it) {
+    //     const Kmer* k = it->kmer;
+    //     const uint64_t* origins = it->origins;
+    //     std::uint32_t nleft = it->n;
+    //     for (; nleft; --nleft, ++origins) {
+    //       add_match(*k, *origins);
+    //     }
+    //   }
+    // }
+
     filtered_hits.clear();
     prev = kmer.position();
 
@@ -744,32 +716,32 @@ void MinimizerEngine::HistFastExact(
     std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
     std::vector<std::unique_ptr<ReadRec>>::const_iterator last)
 {
-  struct GlobalShard {
-    std::mutex m;
-    std::unordered_map<std::uint64_t, std::uint64_t> counts; // kmer -> total multiplicity
-    GlobalShard() {
-      counts.max_load_factor(0.7f);
-      counts.reserve(1u << 18); // tweak based on dataset size
-    }
-  };
-
   if (first == last) return;
 
   std::cerr << "[ram::] Building k-mer histogram to estimate coverage peaks (fast exact)...\n";
 
-  std::vector<GlobalShard> shards(SHARDS);
-
-  typedef std::vector<std::unique_ptr<ReadRec>>::const_iterator It;
-  const std::ptrdiff_t Nreads = std::distance(first, last);
-
-
-  std::size_t T = 1;
-  if (thread_pool_) {
-    unsigned hc = std::thread::hardware_concurrency();
-    T = hc ? static_cast<std::size_t>(hc) : 1u;
+  // ---- init shards_ (power-of-two) ----
+  const std::size_t SHARD_COUNT = 128; // adjust (256/512) if you have many distinct k-mers
+  shards_.clear();
+  shards_.resize(SHARD_COUNT);
+  for (std::size_t i = 0; i < shards_.size(); ++i) {
+    shards_[i].counts.max_load_factor(0.7f);
+    shards_[i].counts.reserve(1u << 18);
+    shards_[i].frozen.clear();
   }
 
+  using It = std::vector<std::unique_ptr<ReadRec>>::const_iterator;
+  const std::ptrdiff_t Nreads = std::distance(first, last);
+
+  // threads to use
+  std::size_t T = 1;
+  if (thread_pool_) {
+    const unsigned hc = std::thread::hardware_concurrency();
+    T = hc ? static_cast<std::size_t>(hc) : 1u;
+  }
   const std::ptrdiff_t chunk = (Nreads + static_cast<std::ptrdiff_t>(T) - 1) / static_cast<std::ptrdiff_t>(T);
+
+  // ---- parallel merge: per-thread local buffers -> shards_.counts ----
   std::vector<std::future<void>> futs;
   futs.reserve(T);
 
@@ -778,7 +750,11 @@ void MinimizerEngine::HistFastExact(
     It e = first; std::advance(e, std::min<std::ptrdiff_t>(Nreads, static_cast<std::ptrdiff_t>(t + 1) * chunk));
     if (b == e) break;
 
-    futs.emplace_back(thread_pool_->Submit([b, e, &shards]() {
+    futs.emplace_back(thread_pool_->Submit([this, b, e]() {
+      const std::size_t S = this->shards_.size();
+      // thread-local buffers: one vector per shard, store (key,val)
+      std::vector<std::vector<std::pair<std::uint64_t,std::uint64_t>>> local(S);
+
       for (It it = b; it != e; ++it) {
         const ReadRec* r = it->get();
         if (!r) continue;
@@ -786,65 +762,109 @@ void MinimizerEngine::HistFastExact(
              kv != r->kmer_counts.end(); ++kv) {
           const std::uint64_t key = kv->first;
           const std::uint64_t val = kv->second;
-          const std::size_t idx = static_cast<std::size_t>(key) & (shards.size() - 1); // SHARDS is pow2
-          GlobalShard& sh = shards[idx];
-          std::lock_guard<std::mutex> lk(sh.m);
-          sh.counts[key] += val;
+          const std::size_t idx = static_cast<std::size_t>(key) & (S - 1);
+          local[idx].emplace_back(key, val);
+        }
+      }
+
+      // flush each shard buffer with a single lock
+      for (std::size_t idx = 0; idx < S; ++idx) {
+        std::vector<std::pair<std::uint64_t,std::uint64_t>>& buf = local[idx];
+        if (buf.empty()) continue;
+
+        // combine duplicates in local buffer to reduce map ops
+        std::sort(buf.begin(), buf.end(),
+                  [](const std::pair<std::uint64_t,std::uint64_t>& a,
+                     const std::pair<std::uint64_t,std::uint64_t>& b){ return a.first < b.first; });
+        std::size_t w = 0;
+        for (std::size_t i = 0; i < buf.size(); ) {
+          const std::uint64_t k = buf[i].first;
+          std::uint64_t sum = 0;
+          do { sum += buf[i].second; ++i; } while (i < buf.size() && buf[i].first == k);
+          buf[w++] = std::make_pair(k, sum);
+        }
+        buf.resize(w);
+
+        GlobalShard& sh = this->shards_[idx];
+        std::lock_guard<std::mutex> lk(sh.m);
+        if (sh.counts.bucket_count() * sh.counts.max_load_factor() < sh.counts.size() + buf.size()) {
+          sh.counts.reserve(sh.counts.size() + buf.size());
+        }
+        for (std::size_t i = 0; i < buf.size(); ++i) {
+          sh.counts[buf[i].first] += buf[i].second;
         }
       }
     }));
   }
-
   for (std::size_t i = 0; i < futs.size(); ++i) futs[i].wait();
 
   std::cerr << "[ram::] Merged k-mer counts from all threads.\n";
 
-  std::size_t est_total = 0;
-  for (std::size_t i = 0; i < shards.size(); ++i) est_total += shards[i].counts.size();
+  // ---- parallel freeze: counts -> frozen (sorted), then free hash ----
+  {
+    std::vector<std::future<void>> freeze_futs;
+    freeze_futs.reserve(shards_.size());
+    for (std::size_t i = 0; i < shards_.size(); ++i) {
+      freeze_futs.emplace_back(thread_pool_->Submit([this, i]() {
+        GlobalShard& sh = this->shards_[i];
+        sh.frozen.clear();
+        sh.frozen.reserve(sh.counts.size());
+        for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator it = sh.counts.begin();
+             it != sh.counts.end(); ++it) {
+          sh.frozen.emplace_back(it->first, static_cast<std::size_t>(it->second));
+        }
+        std::sort(sh.frozen.begin(), sh.frozen.end(),
+                  [](const std::pair<std::uint64_t,std::size_t>& a,
+                     const std::pair<std::uint64_t,std::size_t>& b){ return a.first < b.first; });
+        sh.counts.clear();
+        sh.counts.rehash(0);
+      }));
+    }
+    for (std::size_t i = 0; i < freeze_futs.size(); ++i) freeze_futs[i].wait();
+  }
 
-  kmer_counts_.clear();
-  kmer_counts_.max_load_factor(0.7f);   
-  kmer_counts_.reserve(est_total);
-
-  for (std::size_t i = 0; i < shards.size(); ++i) {
-    for (std::unordered_map<std::uint64_t, std::uint64_t>::const_iterator it = shards[i].counts.begin();
-         it != shards[i].counts.end(); ++it) {
-      // cast to size_t to match your member type
-      kmer_counts_[it->first] += static_cast<std::size_t>(it->second);
+  // ---- build histogram directly from frozen shards ----
+  std::unordered_map<std::uint64_t, std::uint64_t> hist_u;
+  {
+    // rough reserve to reduce rehashing
+    std::size_t approx_bins = 0;
+    for (std::size_t i = 0; i < shards_.size(); ++i) approx_bins += shards_[i].frozen.size();
+    hist_u.max_load_factor(0.7f);
+    // bins are multiplicities; number of distinct multiplicities << number of keys,
+    // so reserving too much is wasteful—leave default or a small number
+    for (std::size_t i = 0; i < shards_.size(); ++i) {
+      const std::vector<std::pair<std::uint64_t,std::size_t> >& fv = shards_[i].frozen;
+      for (std::size_t j = 0; j < fv.size(); ++j) {
+        ++hist_u[static_cast<std::uint64_t>(fv[j].second)];
+      }
     }
   }
 
-  if(cov_ == 0){
+  // Convert to ordered map and find peaks
+  std::map<std::uint64_t, std::uint64_t> final_hist(hist_u.begin(), hist_u.end());
+
+  if (cov_ == 0) {
     std::cerr << "[ram::] Estimating coverage peaks.\n";
-
-    std::unordered_map<std::uint64_t, std::uint64_t> hist_u;
-    hist_u.max_load_factor(0.7f);
-    hist_u.reserve(kmer_counts_.size());
-
-    for (std::unordered_map<std::uint64_t, std::size_t>::const_iterator it = kmer_counts_.begin();
-        it != kmer_counts_.end(); ++it) {
-      ++hist_u[static_cast<std::uint64_t>(it->second)];
-    }
-
-    std::map<std::uint64_t, std::uint64_t> final_ist = std::map<std::uint64_t, std::uint64_t>(hist_u.begin(), hist_u.end());
-    std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(final_ist, 3, 100);
+    std::pair<std::size_t, std::size_t> ph = find_hist_peak_ignoring_low(final_hist, 3, 100);
     hom_peak_ = ph.first;
-    het_peak_ = hom_peak_/2;
+    het_peak_ = hom_peak_ / 2;
 
     std::cerr << "[ram::] "
-              << "hom peak ≈ " << hom_peak_ 
-              << ", het peak ≈ " << het_peak_ 
+              << "hom peak ≈ " << hom_peak_
+              << ", het peak ≈ " << het_peak_
               << '\n';
   } else {
     std::cerr << "[ram::] Using provided coverage to set peaks.\n";
-    hom_peak_ = cov_*2;
+    hom_peak_ = cov_ * 2;
     het_peak_ = cov_;
     std::cerr << "[ram::] "
-            << "hom peak set to " << hom_peak_ 
-            << ", het peak set to " << het_peak_ 
-            << '\n';
+              << "hom peak set to " << hom_peak_
+              << ", het peak set to " << het_peak_
+              << '\n';
   }
-}
+};
+
+
 
 void MinimizerEngine::Hist(
   std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
@@ -999,11 +1019,8 @@ std::vector<std::pair<std::uint64_t, std::uint16_t>> MinimizerEngine::SketchRead
   };
 
   auto return_kmer_count = [&] (std::uint64_t value) -> std::uint16_t {
-    auto val = kmer_counts_.find(set_top2(value, 0));
-    if(val != kmer_counts_.end()) {
-    return val->second;
-  } 
-    return 0; 
+    const std::uint64_t canon = set_top2(value, 0);
+    return FastKmerCount(canon);
   };
 
   std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
@@ -1309,29 +1326,54 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
   };
 
 
+  // auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
+  //   auto val = kmer_counts_.find(set_top2(value, 0));
+  //   //auto val = kmer_counts_.find(value);
+  //   if (!use_minimizers_)
+  //   {
+  //     if (val != kmer_counts_.end()) {
+  //       auto count = val->second;
+  //       if (count <= (het_peak_ / 4) * fraction_) {
+  //         return set_top2(value, 3);  // Low frequency
+  //       } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
+  //         return set_top2(value, 0);  // Medium frequency
+  //       } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
+  //         return set_top2(value, 1);  // High frequency
+  //       } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
+  //         return set_top2(value, 2);  // Very high frequency
+  //       }
+  //     }
+  //   return set_top2(value, 3);  // Default to low frequency
+  //  } else {
+  //   return set_top2(value, 0);  // When using minimizers, treat all as medium frequency
+  //  }
+  // // return set_top2(value, 0);  // Default to medium frequency
+  // };
+
   auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
-    auto val = kmer_counts_.find(set_top2(value, 0));
-    //auto val = kmer_counts_.find(value);
-    if (!use_minimizers_)
-    {
-      if (val != kmer_counts_.end()) {
-        auto count = val->second;
-        if (count <= (het_peak_ / 4) * fraction_) {
-          return set_top2(value, 3);  // Low frequency
-        } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
-          return set_top2(value, 0);  // Medium frequency
-        } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
-          return set_top2(value, 1);  // High frequency
-        } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
-          return set_top2(value, 2);  // Very high frequency
-        }
-      }
-    return set_top2(value, 3);  // Default to low frequency
-   } else {
-    return set_top2(value, 0);  // When using minimizers, treat all as medium frequency
-   }
-  // return set_top2(value, 0);  // Default to medium frequency
+    if (use_minimizers_) {
+      return set_top2(value, 0);  // treat as medium when using minimizers
+    }
+
+    const std::uint64_t canon = set_top2(value, 0);
+    const std::size_t count = FastKmerCount(canon);  // <--- shard-frozen lookup
+
+    // thresholds (use double math to avoid truncation)
+    const double frac = fraction_;
+    const double het  = static_cast<double>(het_peak_);
+    const double hom  = static_cast<double>(hom_peak_);
+
+    if (count <= static_cast<std::size_t>((het / 4.0) * frac)) {
+      return set_top2(value, 3);  // Low
+    } else if (count <= static_cast<std::size_t>((het + ((hom - het) / 2.0)) * frac)) {
+      return set_top2(value, 0);  // Medium
+    } else if (count <  static_cast<std::size_t>((hom + het) * frac)) {
+      return set_top2(value, 1);  // High
+    } else {
+      return set_top2(value, 2);  // Very high
+    }
   };
+
 
   std::deque<Kmer> window;
 

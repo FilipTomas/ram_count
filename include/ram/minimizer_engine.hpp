@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <utility>
 #include <map>
+#include <deque>
 
 #include "biosoup/nucleic_acid.hpp"
 #include "biosoup/overlap.hpp"
@@ -134,6 +135,29 @@ private:
     std::uint64_t origin;
   };
 
+  // inline std::size_t FastKmerCount(std::uint64_t key) const {
+  //   const auto it = std::lower_bound(
+  //       kmer_counts_vec_.begin(), kmer_counts_vec_.end(), key,
+  //       [](const KmerCountKV& a, std::uint64_t k){ return a.key < k; });
+  //   return (it != kmer_counts_vec_.end() && it->key == key) ? it->cnt : std::size_t(0);
+  // }
+
+  struct GlobalShard {
+    std::mutex m;
+    std::unordered_map<std::uint64_t, std::uint64_t> counts;   // build phase
+    std::vector<std::pair<std::uint64_t, std::size_t>> frozen; // query phase
+  };
+  std::deque<GlobalShard> shards_;           // size = SHARDS, power-of-two
+
+  // Build-time: set shard count (call once before building)
+  void InitShards(std::size_t shard_pow2 = 128);
+
+  // After merge: convert each shard's map -> sorted vector and optionally free maps
+  void FreezeShardsToVectors();
+
+  // Fast read-only lookup from frozen shards
+  inline std::size_t FastKmerCount(std::uint64_t key) const;
+
   struct Match {
    public:
     Match() = default;
@@ -234,6 +258,13 @@ private:
       std::vector<Match>::const_iterator last,
       Compare comp);  // binary comparison function
 
+
+
+  struct KmerCountKV {
+    std::uint64_t key;
+    std::size_t   cnt;
+  };
+  std::vector<KmerCountKV> kmer_counts_vec_; 
   std::uint32_t k_; 
   std::uint32_t w_;
   std::uint32_t bandwidth_;
