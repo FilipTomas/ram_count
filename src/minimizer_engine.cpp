@@ -156,12 +156,12 @@ void MinimizerEngine::Minimize(
   };
 
 
-  std::ofstream minimizer_file("minimizer_counts.txt");
-  for(const auto& it : kmer_counts){
-      std::uint64_t stored_key = set_top2(it.first,0);
-      minimizer_file << stored_key << "\t" << it.second << std::endl;
-    }
-  minimizer_file.close();
+  // std::ofstream minimizer_file("minimizer_counts.txt");
+  // for(const auto& it : kmer_counts){
+  //     std::uint64_t stored_key = set_top2(it.first,0);
+  //     minimizer_file << stored_key << "\t" << it.second << std::endl;
+  //   }
+  // minimizer_file.close();
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
