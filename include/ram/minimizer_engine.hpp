@@ -15,6 +15,7 @@
 #include "biosoup/overlap.hpp"
 #include "thread_pool/thread_pool.hpp"
 #include "read_rec.hpp"
+#include "fastk_shim.h"
 
 namespace ram {
 
@@ -30,6 +31,8 @@ class MinimizerEngine {
       std::uint32_t gap = 10000,
       double fraction = 1, 
       std::uint32_t cov = 0,
+      float haploid_coverage_ratio = 0.5f,
+      std::string fastk_count_path = "",
       bool use_minimizers = false);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
@@ -52,6 +55,9 @@ class MinimizerEngine {
       std::vector<std::unique_ptr<ReadRec>>::const_iterator last,
       float fraction,
       bool minhash = false);  // count k-mers in preconstructed minimizer index
+
+  void LoadFastK(void);
+  void EstimatePeaksFastK();
 
   void Hist(
       std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
@@ -244,6 +250,9 @@ private:
   std::vector<Kmer> MinimizeByCount(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
+  std::vector<Kmer> MinimizeFastK(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+
   // std::vector<Kmer> MinimizeRepetitiveByCount(
   //   const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
@@ -283,12 +292,17 @@ private:
   std::uint32_t het_peak_ = 25;
   std::uint32_t het_std_;  // peak of heterogeneity in the minimizer index
   std::uint32_t hom_peak_;
-  std::uint32_t hom_std_ = 25;  // peak of homogeneity in the minimizer
+  std::uint32_t hom_std_ = 25;
   std::uint32_t err_peak_ = 2;
   std::uint32_t cov_ = 0;
   std::unordered_map<std::uint64_t, std::size_t> kmer_counts_;
   double fraction_ = 1;
   bool use_minimizers_ = false;
+  Kmer_Table *fastk_kmer_table_ = nullptr;
+  Histogram *fastk_histogram_ = nullptr;
+  std::string fastk_counts_;
+  float diploid_coverage_;
+  float haploid_coverage_ratio_;
 };
 
 }  // namespace ram

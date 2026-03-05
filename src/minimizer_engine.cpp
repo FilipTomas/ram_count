@@ -2,6 +2,7 @@
 
 #include "ram/minimizer_engine.hpp"
 #include "ram/gmm.hpp"
+#include "ram/fastk_shim.h"
 //#include "ram/read_rec.hpp"
 #include <deque>
 #include <stdexcept>
@@ -34,6 +35,8 @@ MinimizerEngine::MinimizerEngine(
     std::uint32_t gap,
     double fraction,
     std::uint32_t cov,
+    float haploid_coverage_ratio,
+    std::string fastk_count_path,
     bool use_minimizers)
   : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
   , w_(w)
@@ -47,6 +50,8 @@ MinimizerEngine::MinimizerEngine(
                              : std::make_shared<thread_pool::ThreadPool>(1))
   , fraction_(fraction)
   , cov_(cov)
+  , haploid_coverage_ratio_(haploid_coverage_ratio)
+  , fastk_counts_(fastk_count_path)
   , use_minimizers_(use_minimizers)
 {}
 
@@ -123,46 +128,71 @@ void MinimizerEngine::Minimize(
   std::vector<std::vector<Kmer>> minimizers(index_.size());
   {
     std::uint64_t mask = index_.size() - 1;
-
-    while (first != last) {
-      std::size_t batch_size = 0;
-      std::vector<std::future<std::vector<Kmer>>> futures;
-      for (; first != last && batch_size < 50000000; ++first) {
-        batch_size += (*first)->inflated_len;
-        futures.emplace_back(thread_pool_->Submit(
-            [&] (decltype(first) it) -> std::vector<Kmer> {
-              return MinimizeByCount(*it);
-            },
-            first));
-      }
-      for (auto& it : futures) {
-        for (const auto& jt : it.get()) {
-          ++kmer_counts[jt.value];
-          auto& m = minimizers[jt.value & mask];
-          if (m.capacity() == m.size()) {
-            m.reserve(m.capacity() * 1.5);
+    if(fastk_counts_ != ""){
+      std::cerr << "Minimizing Using FastK counts!" << std::endl;
+      while (first != last) {
+        std::size_t batch_size = 0;
+        std::vector<std::future<std::vector<Kmer>>> futures;
+        for (; first != last && batch_size < 50000000; ++first) {
+          batch_size += (*first)->inflated_len;
+          futures.emplace_back(thread_pool_->Submit(
+              [&] (decltype(first) it) -> std::vector<Kmer> {
+                return MinimizeFastK(*it);
+              },
+              first));
+        }
+        for (auto& it : futures) {
+          for (const auto& jt : it.get()) {
+            ++kmer_counts[jt.value];
+            auto& m = minimizers[jt.value & mask];
+            if (m.capacity() == m.size()) {
+              m.reserve(m.capacity() * 1.5);
+            }
+            m.emplace_back(jt);
           }
-          m.emplace_back(jt);
+        }
+      }
+    } else {
+      while (first != last) {
+        std::size_t batch_size = 0;
+        std::vector<std::future<std::vector<Kmer>>> futures;
+        for (; first != last && batch_size < 50000000; ++first) {
+          batch_size += (*first)->inflated_len;
+          futures.emplace_back(thread_pool_->Submit(
+              [&] (decltype(first) it) -> std::vector<Kmer> {
+                return MinimizeByCount(*it);
+              },
+              first));
+        }
+        for (auto& it : futures) {
+          for (const auto& jt : it.get()) {
+            ++kmer_counts[jt.value];
+            auto& m = minimizers[jt.value & mask];
+            if (m.capacity() == m.size()) {
+              m.reserve(m.capacity() * 1.5);
+            }
+            m.emplace_back(jt);
+          }
         }
       }
     }
   }
 
-  // auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
-  //     key &= ~ (3ULL << 62);                  // clear bits 63-62
-  //     key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
-  //             << 62);                         // move into bit-63/62 slots
-  //     return key;
-  // };
+  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+      key &= ~ (3ULL << 62);                  // clear bits 63-62
+      key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
+              << 62);                         // move into bit-63/62 slots
+      return key;
+  };
 
 
-  //   std::ofstream minimizer_file("minimizer_counts.txt");
-  //   for(const auto& it : kmer_counts){
-  //       std::uint64_t stored_key = set_top2(it.first,0);
-  //       minimizer_file << stored_key << "\t" << it.second << std::endl;
-  //     }
-  //   minimizer_file.close();
-  //   exit(0);
+    std::ofstream minimizer_file("minimizer_counts.txt");
+    for(const auto& it : kmer_counts){
+        std::uint64_t stored_key = set_top2(it.first,0);
+        minimizer_file << stored_key << "\t" << it.second << std::endl;
+      }
+    minimizer_file.close();
+    exit(0);
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
@@ -1533,31 +1563,6 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
       return key;
   };
 
-
-  // auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
-  //   auto val = kmer_counts_.find(set_top2(value, 0));
-  //   //auto val = kmer_counts_.find(value);
-  //   if (!use_minimizers_)
-  //   {
-  //     if (val != kmer_counts_.end()) {
-  //       auto count = val->second;
-  //       if (count <= (het_peak_ / 4) * fraction_) {
-  //         return set_top2(value, 3);  // Low frequency
-  //       } else if (count > (het_peak_ / 4) * fraction_ && count <= (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_) {
-  //         return set_top2(value, 0);  // Medium frequency
-  //       } else if (count > (het_peak_ + ((hom_peak_ - het_peak_)/2)) * fraction_ && count < (hom_peak_ + het_peak_) * fraction_) {
-  //         return set_top2(value, 1);  // High frequency
-  //       } else if (count >= (hom_peak_ + het_peak_) * fraction_) {
-  //         return set_top2(value, 2);  // Very high frequency
-  //       }
-  //     }
-  //   return set_top2(value, 3);  // Default to low frequency
-  //  } else {
-  //   return set_top2(value, 0);  // When using minimizers, treat all as medium frequency
-  //  }
-  // // return set_top2(value, 0);  // Default to medium frequency
-  // };
-
   auto classify_kmer = [&](std::uint64_t value) -> std::uint64_t {
     if (use_minimizers_) {
       return set_top2(value, 0);  // treat as medium when using minimizers
@@ -1643,6 +1648,208 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
 
     if (i >= (k_ - 1U) + (w_ - 1U)) {
     //if (i >= (k_ - 1U) + (w_ph - 1U)){
+      for (auto it = window.begin(); it != window.end(); ++it) {
+        if (it->value != window.front().value) {
+          break;
+        }
+        if (it->origin & is_stored) {
+          continue;
+        }
+        dst.emplace_back(it->value, id | it->origin);
+        it->origin |= is_stored;
+      }
+     // window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
+      window_update(i - (k_ - 1U) - (w_ph - 1U) + 1);
+    }
+  }
+
+  return dst;
+}
+
+void MinimizerEngine::LoadFastK(){
+    std::cerr << "Loading Fastk Tables From: " << fastk_counts_ << std::endl;
+    std::string counts = fastk_counts_ + "/counts";
+    std::vector<char> counts_buf(counts.begin(), counts.end());
+    counts_buf.push_back('\0');
+    fastk_kmer_table_ = ram_fastk_load_kmer_table(counts_buf.data(), 1);
+
+    std::string hist = fastk_counts_ + "/histogram";
+    std::vector<char> hist_buf(hist.begin(), hist.end());
+    hist_buf.push_back('\0');    
+    fastk_histogram_= ram_fastk_load_histogram(hist_buf.data());
+};
+
+void MinimizerEngine::EstimatePeaksFastK(){
+  cov_ = 53;
+}
+
+std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeFastK(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
+  if (sequence->inflated_len < k_) {
+    return std::vector<Kmer>{};
+  }
+
+  std::uint64_t kmer_lo = 0, kmer_hi = 0;
+  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
+  std::uint64_t mask_lo = (k_ <= 32) ? ((1ULL << (2 * k_)) - 1) : ~0ULL;
+  std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
+
+  auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
+    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
+    key = ((~key) + (key << 21));
+    key = key ^ (key >> 24);
+    key = ((key + (key << 3)) + (key << 8));
+    key = key ^ (key >> 14);
+    key = ((key + (key << 2)) + (key << 4));
+    key = key ^ (key >> 28);
+    key = (key + (key << 31));
+    return key;
+  };
+
+
+  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+      key &= ~ (3ULL << 62);                  // clear bits 63-62
+      key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
+              << 62);                         // move into bit-63/62 slots
+      return key;
+  };
+
+auto unpack_kmer_forward = [](std::uint64_t hi,
+                                std::uint64_t lo,
+                                int k,
+                                char* out) -> void {
+  int tail = (k > 32 ? 32 : k);     // last up to 32 bases are in lo
+  std::uint64_t cur_lo = lo;
+  std::uint64_t cur_hi = hi;
+
+  // Tail: last 'tail' bases from lo → positions [k-tail .. k-1]
+  for (int pos = k - 1; pos >= k - tail; --pos) {
+    out[pos] = static_cast<char>(cur_lo & 0x3);  // 0..3
+    cur_lo >>= 2;
+  }
+
+  // Head: remaining bases from hi → positions [0 .. k-tail-1]
+  for (int pos = k - tail - 1; pos >= 0; --pos) {
+    out[pos] = static_cast<char>(cur_hi & 0x3);  // 0..3
+    cur_hi >>= 2;
+  }
+};
+
+  auto fastk_get_count = [&](std::uint64_t hi,
+                            std::uint64_t lo,
+                            int k) -> std::uint32_t {
+    if (!fastk_kmer_table_) return 0;
+    auto map_0123_to_ACGT =[](char* buf, size_t n) -> void {
+      static constexpr char lut[4] = {'a','c','g','t'};
+      for (size_t i = 0; i < n; ++i) {
+          buf[i] = lut[static_cast<unsigned char>(buf[i]) & 3];
+      }
+    };
+    char buf[64];  // k <= 64 is fine
+    unpack_kmer_forward(hi, lo, k, buf);
+    map_0123_to_ACGT(buf, k);
+    std::uint64_t idx = ram_fastk_find_kmer(fastk_kmer_table_, buf);
+    int count = ram_fastk_fetch_count(fastk_kmer_table_, idx);
+    if (idx < 0) {
+      return 0;
+    }  // not present in table
+    return static_cast<std::uint32_t>(ram_fastk_fetch_count(fastk_kmer_table_, idx));
+  };
+
+  // NEW: classify using FastK counts
+  auto classify_kmer = [&](std::uint64_t hash_no_class,
+                           std::uint64_t kmer_hi_bits,
+                           std::uint64_t kmer_lo_bits) -> std::uint64_t {
+    std::uint32_t count = 0;
+    if (fastk_kmer_table_) {
+      count = fastk_get_count(kmer_hi_bits, kmer_lo_bits, k_);
+    }
+
+    // If it's not in the table, treat as "low" by default (class 3)
+    if (count == 0) {
+      return set_top2(hash_no_class, 3);
+      //return set_bits_56_55(hash_no_class, 0);
+    }
+
+    // Your original thresholds
+    double c = static_cast<double>(count);
+    double t_low  = ((cov_*haploid_coverage_ratio_) / 4.0) * fraction_;
+    double t_mid  = ((cov_*haploid_coverage_ratio_) + (cov_ - (cov_*haploid_coverage_ratio_)) / 2.0) * fraction_;
+    double t_high = (cov_ + (cov_*haploid_coverage_ratio_)) * fraction_;
+
+    if (c <= t_low) {
+    //  return set_bits_56_55(hash_no_class, 3); // low frequency
+      return set_top2(hash_no_class, 0); // low frequency
+    } else if (c > t_low && c <= t_mid) {
+      return set_top2(hash_no_class, 0); // medium 0
+    } else if (c > t_mid && c < t_high) {
+    //  return set_bits_56_55(hash_no_class, 1); // high
+      return set_top2(hash_no_class, 0); // low frequency 1 
+    } else { // c >= t_high
+    //  return set_bits_56_55(hash_no_class, 2); // very high
+     return set_top2(hash_no_class, 0); // low frequency 2 
+    }
+  };
+
+  std::uint32_t w_ph = 1;
+  std::deque<Kmer> window;
+
+  auto window_add = [&] (std::uint64_t value, std::uint64_t location) -> void {
+    while (!window.empty() && window.back().value > value) {
+      window.pop_back();
+    }
+    window.emplace_back(value, location);
+  };
+
+  auto window_update = [&] (std::uint32_t position) -> void {
+    while (!window.empty() && (window.front().position()) < position) {
+      window.pop_front();
+    }
+  };
+
+  std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
+  std::uint64_t is_stored = 1ULL << 63;
+  std::vector<Kmer> dst;
+
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    std::uint64_t c = sequence->Code(i);
+
+    if (k_ <= 32) {
+      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
+    } else {
+      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
+      kmer_hi &= mask_hi;
+      kmer_lo = ((kmer_lo << 2) | c);
+    }
+
+    std::uint64_t rc = c ^ 3;
+    if (k_ <= 32) {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
+      rev_kmer_lo &= mask_lo;
+    } else {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3) << 62);
+      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
+      rev_kmer_hi &= mask_hi;
+    }
+
+    if (i >= k_ - 1U) {
+      bool fwd_is_min = false;
+      if (k_ <= 32) {
+        fwd_is_min = kmer_lo < rev_kmer_lo;
+      } else {
+        if (kmer_hi < rev_kmer_hi) fwd_is_min = true;
+        else if (kmer_hi > rev_kmer_hi) fwd_is_min = false;
+        else fwd_is_min = kmer_lo < rev_kmer_lo;
+      }
+      if (fwd_is_min) {
+        window_add(classify_kmer(hash2(kmer_hi, kmer_lo), kmer_hi, kmer_lo), (i - (k_ - 1U)) << 1 | 0);
+      } else {
+        window_add(classify_kmer(hash2(rev_kmer_hi, rev_kmer_lo), rev_kmer_hi, rev_kmer_lo), (i - (k_ - 1U)) << 1 | 1);
+      }
+    }
+
+ //   if (i >= (k_ - 1U) + (w_ - 1U)) {
+    if (i >= (k_ - 1U) + (w_ph - 1U)){
       for (auto it = window.begin(); it != window.end(); ++it) {
         if (it->value != window.front().value) {
           break;

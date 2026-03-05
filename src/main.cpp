@@ -28,9 +28,11 @@ static struct option options[] = {
   {"gap", required_argument, nullptr, 'g'},
   {"minhash", no_argument, nullptr, 'M'},
   {"fraction", required_argument, nullptr, 'F'},
-  {"coverage", required_argument, nullptr, 'C'},
+  {"diploid_coverage", required_argument, nullptr, 'C'},
   {"minimizers", no_argument, nullptr, 'N'},
   {"threads", required_argument, nullptr, 't'},
+  {"fastk_counts", required_argument, nullptr, 'K'},
+  {"haploid_coverage_ratio", required_argument, nullptr, 'R'},
   {"version", no_argument, nullptr, 'v'},
   {"help", no_argument, nullptr, 'h'},
   {nullptr, 0, nullptr, 0}
@@ -133,10 +135,12 @@ int main(int argc, char** argv) {
   float fraction = 1;
   bool use_minimizers = false;
   std::uint32_t num_threads = 1;
+  std::string fastk_counts_path = "";
+  float haploid_coverage_ratio = 0.5f;
 
   std::vector<std::string> input_paths;
 
-  const char* optstr = "k:w:f:t:h:C:N";
+  const char* optstr = "k:w:f:t:h:C:K:R:N";
   char arg;
   while ((arg = getopt_long(argc, argv, optstr, options, nullptr)) != -1) {
     switch (arg) {
@@ -151,6 +155,8 @@ int main(int argc, char** argv) {
       case 't': num_threads = std::atoi(optarg); break;
       case 'F': fraction = std::atof(optarg); break;
       case 'C': cov = std::atoi(optarg); break;
+      case 'K': fastk_counts_path = std::string(optarg); break;
+      case 'R': haploid_coverage_ratio = std::atof(optarg); break;
       case 'N': use_minimizers = true; break;
       case 'v': std::cout << VERSION << std::endl; return 0;
       case 'h': Help(); return 0;
@@ -201,6 +207,8 @@ int main(int argc, char** argv) {
       gap,
       fraction,
       cov,
+      haploid_coverage_ratio,
+      fastk_counts_path,
       use_minimizers};
 
   biosoup::Timer timer{};
@@ -225,7 +233,7 @@ int main(int argc, char** argv) {
               << std::endl;
 
     timer.Start();
-    if (!use_minimizers){
+    if (!use_minimizers && fastk_counts_path == ""){
       std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets2;
       targets2.reserve(targets.size());
       for (auto const& p : targets) {
@@ -241,6 +249,11 @@ int main(int argc, char** argv) {
       }
       minimizer_engine.Count(targets_ext.begin(), targets_ext.begin() + static_cast<std::ptrdiff_t>(targets_ext.size()*fraction), fraction, minhash);
       minimizer_engine.HistFastExact(targets_ext.begin(), targets_ext.begin() + static_cast<std::ptrdiff_t>(targets_ext.size()*fraction));
+    } else if(!use_minimizers && fastk_counts_path != "") {
+      minimizer_engine.LoadFastK();
+      if(cov == 0){
+        minimizer_engine.EstimatePeaksFastK();
+      }
     }
 
     std::cerr << "[ram::] counted kmers in targets "

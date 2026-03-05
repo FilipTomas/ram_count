@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.11)
 
 project(ram VERSION 2.2.0
-            LANGUAGES CXX
+            LANGUAGES C CXX
             DESCRIPTION "Ram is a c++ implementation of [minimap](https://github.com/lh3/minimap) with few modifications.")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
@@ -106,6 +106,33 @@ if (ram_build_tests)
   endif ()
 endif ()
 
+FetchContent_Declare(
+  fastk
+  GIT_REPOSITORY https://github.com/thegenemyers/FASTK
+  GIT_TAG master
+)
+
+FetchContent_GetProperties(fastk)
+if (NOT fastk_POPULATED)
+  FetchContent_Populate(fastk)
+endif ()
+
+# ---- FASTK + C shim (minimal required change) ----
+add_library(fastk STATIC
+  ${fastk_SOURCE_DIR}/libfastk.c
+  src/fastk_shim.c
+)
+
+target_include_directories(fastk PUBLIC
+  ${fastk_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+set_target_properties(fastk PROPERTIES
+  LINKER_LANGUAGE C
+)
+# -----------------------------------------------
+
 add_library(ram
   src/minimizer_engine.cpp)
 add_library(ram::ram ALIAS ram)
@@ -116,7 +143,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 target_link_libraries(ram
   biosoup::biosoup
-  thread_pool::thread_pool)
+  thread_pool::thread_pool
+  fastk)
 
 if (ram_install)
   configure_package_config_file(
