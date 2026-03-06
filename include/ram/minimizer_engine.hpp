@@ -81,7 +81,16 @@ class MinimizerEngine {
     std::uint32_t step,
     std::vector<std::uint64_t>& ids_out,
     std::vector<float>& counts_out
+  ) const;
+
+void FastKSketchReadInto(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    std::uint32_t step,
+    std::vector<std::uint64_t>& ids_out,
+    std::vector<float>& counts_out,
+    std::vector<std::uint32_t>& qualities
 ) const;
+
   // set occurrence frequency threshold
   void Filter(double frequency);
 

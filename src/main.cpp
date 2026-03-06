@@ -232,6 +232,9 @@ int main(int argc, char** argv) {
               << std::fixed << timer.Stop() << "s"
               << std::endl;
 
+    // auto qualities = targets[0]->block_quality;
+    // auto expanded_qualities = targets[0]->InflateQuality();
+
     timer.Start();
     if (!use_minimizers && fastk_counts_path == ""){
       std::vector<std::unique_ptr<biosoup::NucleicAcid>> targets2;
@@ -255,6 +258,11 @@ int main(int argc, char** argv) {
         minimizer_engine.EstimatePeaksFastK();
       }
     }
+
+    std::vector<std::uint64_t> ids_out;
+    std::vector<float> counts_out;
+    std::vector<std::uint32_t> qualities_out;
+    minimizer_engine.FastKSketchReadInto(targets[0], 1U, ids_out, counts_out, qualities_out);
 
     std::cerr << "[ram::] counted kmers in targets "
               << std::fixed << timer.Stop() << "s"
