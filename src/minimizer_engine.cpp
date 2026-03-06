@@ -143,7 +143,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-            ++kmer_counts[jt.value];
+        //    ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
