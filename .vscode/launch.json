@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/debug/bin/ram",
             //"args" : ["-t128", "-k21", "-w21", "/mnt/share1_Jabba/ftomas/reads/chr18/badread/chr18.r10.UL.25x.fastq", "/mnt/share1_Jabba/ftomas/reads/chr18/badread/chr18.r10.UL.25x.fastq"],
-            "args" : ["-t64", "-k21", "-w21", "-K", "~/github/ram_dp_chain_fastk/fastk/", "/mnt/share1_Jabba/ftomas/reads/chr19/badread_ONT/subsamples/chr19.badread.ONT.5x.fastq"],
+            "args" : ["-t64", "-k51", "-w21", "-K", "/mnt/share1_Jabba/ftomas/fastk_counts/badread_ONT_k21/chr19", "/mnt/share1_Jabba/ftomas/reads/chr19/badread_ONT/subsamples/chr19.badread.ONT.5x.fastq"],
             //"args" : ["-t64", "-k21", "-w21", "-K", "~/github/ram_dp_chain_fastk/fastk/", "/mnt/share1_Jabba/ftomas/reads/chr19/seqreq/subsample/chr19.5x.seqreq.fasta"],
             "cwd": "${workspaceFolder}/debug/bin/",
             "environment": [],

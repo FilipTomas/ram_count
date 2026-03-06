@@ -1967,7 +1967,7 @@ void MinimizerEngine::LoadFastK(){
     counts_buf.push_back('\0');
     fastk_kmer_table_ = ram_fastk_load_kmer_table(counts_buf.data(), 1);
 
-    std::string hist = fastk_counts_ + "/histogram";
+    std::string hist = fastk_counts_ + "/counts";
     std::vector<char> hist_buf(hist.begin(), hist.end());
     hist_buf.push_back('\0');    
     fastk_histogram_= ram_fastk_load_histogram(hist_buf.data());
