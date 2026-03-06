@@ -166,7 +166,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-            ++kmer_counts[jt.value];
+          //  ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
@@ -186,13 +186,13 @@ void MinimizerEngine::Minimize(
   };
 
 
-    std::ofstream minimizer_file("minimizer_counts.txt");
-    for(const auto& it : kmer_counts){
-        std::uint64_t stored_key = set_top2(it.first,0);
-        minimizer_file << stored_key << "\t" << it.second << std::endl;
-      }
-    minimizer_file.close();
-    exit(0);
+    // std::ofstream minimizer_file("minimizer_counts.txt");
+    // for(const auto& it : kmer_counts){
+    //     std::uint64_t stored_key = set_top2(it.first,0);
+    //     minimizer_file << stored_key << "\t" << it.second << std::endl;
+    //   }
+    // minimizer_file.close();
+    // exit(0);
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
