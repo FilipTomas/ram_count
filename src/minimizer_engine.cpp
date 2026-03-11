@@ -143,7 +143,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-        //    ++kmer_counts[jt.value];
+            ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
@@ -166,7 +166,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-          //  ++kmer_counts[jt.value];
+            ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
@@ -186,13 +186,13 @@ void MinimizerEngine::Minimize(
   };
 
 
-    // std::ofstream minimizer_file("minimizer_counts.txt");
-    // for(const auto& it : kmer_counts){
-    //     std::uint64_t stored_key = set_top2(it.first,0);
-    //     minimizer_file << stored_key << "\t" << it.second << std::endl;
-    //   }
-    // minimizer_file.close();
-    // exit(0);
+    std::ofstream minimizer_file("minimizer_counts.txt");
+    for(const auto& it : kmer_counts){
+        std::uint64_t stored_key = set_top2(it.first,0);
+        minimizer_file << stored_key << "\t" << it.second << std::endl;
+      }
+    minimizer_file.close();
+    exit(0);
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
@@ -1443,12 +1443,14 @@ void MinimizerEngine::FastKSketchReadInto(
     std::uint32_t step,
     std::vector<std::uint64_t>& ids_out,
     std::vector<float>& counts_out,
-    std::vector<std::uint32_t>& qualities
+    std::vector<std::uint32_t>& avg_qualities,
+    std::vector<std::uint32_t>& min_qualities
 ) const {
 
   ids_out.clear();
   counts_out.clear();
-  qualities.clear();
+  avg_qualities.clear();
+  min_qualities.clear();
 
   if (sequence->inflated_len < k_) {
     return;
@@ -1464,9 +1466,15 @@ void MinimizerEngine::FastKSketchReadInto(
 
   ids_out.reserve(out_n);
   counts_out.reserve(out_n);
-  qualities.reserve(out_n);
+  avg_qualities.reserve(out_n);
+  min_qualities.reserve(out_n);
 
-  const auto& quality_string = sequence->InflateQuality();
+  // Prefix sums of per-base numeric Phred qualities.
+  std::vector<std::uint32_t> quality_prefix(sequence->inflated_len + 1, 0);
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    quality_prefix[i + 1] = quality_prefix[i] +
+        static_cast<std::uint32_t>(sequence->Score(i));
+  }
 
   auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
     std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
@@ -1550,8 +1558,26 @@ void MinimizerEngine::FastKSketchReadInto(
 
   std::uint32_t kth = 0;
 
+  // Monotonic deque for sliding-window minimum over per-base qualities.
+  // Stores pairs: (position, quality).
+  std::deque<std::pair<std::uint32_t, std::uint32_t>> min_deque;
+
   for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
     const std::uint64_t c = sequence->Code(i);
+    const std::uint32_t q_base =
+        static_cast<std::uint32_t>(sequence->Score(i));
+
+    // Update sliding minimum structure.
+    while (!min_deque.empty() && min_deque.back().second >= q_base) {
+      min_deque.pop_back();
+    }
+    min_deque.emplace_back(i, q_base);
+
+    const std::uint32_t window_start_for_min =
+        (i >= k_ - 1U) ? (i - k_ + 1U) : 0U;
+    while (!min_deque.empty() && min_deque.front().first < window_start_for_min) {
+      min_deque.pop_front();
+    }
 
     if (k_ <= 32) {
       kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
@@ -1578,7 +1604,10 @@ void MinimizerEngine::FastKSketchReadInto(
       }
       ++kth;
 
-      const std::uint32_t q = static_cast<std::uint32_t>(quality_string[i] - '!');
+      const std::uint32_t start = i - k_ + 1U;
+      const std::uint32_t sum_q = quality_prefix[i + 1] - quality_prefix[start];
+      const std::uint32_t avg_q = sum_q / k_;
+      const std::uint32_t min_q = min_deque.front().second;
 
       bool fwd_is_min = false;
       if (k_ <= 32) {
@@ -1598,13 +1627,15 @@ void MinimizerEngine::FastKSketchReadInto(
         ids_out.emplace_back(set_top2(h, 0));
         counts_out.emplace_back(
             static_cast<float>(fastk_get_count(kmer_hi, kmer_lo, k_)));
-        qualities.emplace_back(q);
+        avg_qualities.emplace_back(avg_q);
+        min_qualities.emplace_back(min_q);
       } else {
         const std::uint64_t h = hash2(rev_kmer_hi, rev_kmer_lo);
         ids_out.emplace_back(set_top2(h, 0));
         counts_out.emplace_back(
             static_cast<float>(fastk_get_count(rev_kmer_hi, rev_kmer_lo, k_)));
-        qualities.emplace_back(q);
+        avg_qualities.emplace_back(avg_q);
+        min_qualities.emplace_back(min_q);
       }
     }
   }
@@ -1966,11 +1997,13 @@ void MinimizerEngine::LoadFastK(){
     std::vector<char> counts_buf(counts.begin(), counts.end());
     counts_buf.push_back('\0');
     fastk_kmer_table_ = ram_fastk_load_kmer_table(counts_buf.data(), 1);
+    std::cerr << "Loaded table" << std::endl;
 
     std::string hist = fastk_counts_ + "/counts";
     std::vector<char> hist_buf(hist.begin(), hist.end());
     hist_buf.push_back('\0');    
     fastk_histogram_= ram_fastk_load_histogram(hist_buf.data());
+    std::cerr << "Loaded hist" << std::endl;
 };
 
 void MinimizerEngine::EstimatePeaksFastK(){
@@ -2061,7 +2094,7 @@ auto unpack_kmer_forward = [](std::uint64_t hi,
 
     // If it's not in the table, treat as "low" by default (class 3)
     if (count == 0) {
-      return set_top2(hash_no_class, 3);
+      return set_top2(hash_no_class, 0);
       //return set_bits_56_55(hash_no_class, 0);
     }
 

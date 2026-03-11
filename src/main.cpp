@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
               << std::fixed << timer.Stop() << "s"
               << std::endl;
 
-    // auto qualities = targets[0]->block_quality;
+    // auto qualities = targets[0]->quality;
     // auto expanded_qualities = targets[0]->InflateQuality();
 
     timer.Start();
@@ -259,10 +259,10 @@ int main(int argc, char** argv) {
       }
     }
 
-    std::vector<std::uint64_t> ids_out;
-    std::vector<float> counts_out;
-    std::vector<std::uint32_t> qualities_out;
-    minimizer_engine.FastKSketchReadInto(targets[0], 1U, ids_out, counts_out, qualities_out);
+    // std::vector<std::uint64_t> ids_out;
+    // std::vector<float> counts_out;
+    // std::vector<std::uint32_t> qualities_out;
+    // minimizer_engine.FastKSketchReadInto(targets[0], 1U, ids_out, counts_out, qualities_out);
 
     std::cerr << "[ram::] counted kmers in targets "
               << std::fixed << timer.Stop() << "s"

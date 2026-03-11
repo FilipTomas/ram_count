@@ -88,7 +88,8 @@ void FastKSketchReadInto(
     std::uint32_t step,
     std::vector<std::uint64_t>& ids_out,
     std::vector<float>& counts_out,
-    std::vector<std::uint32_t>& qualities
+    std::vector<std::uint32_t>& avg_qualities,
+    std::vector<std::uint32_t> & min_qualities
 ) const;
 
   // set occurrence frequency threshold
