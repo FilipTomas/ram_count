@@ -129,7 +129,7 @@ void MinimizerEngine::Minimize(
   {
     std::uint64_t mask = index_.size() - 1;
     if(fastk_counts_ != ""){
-      std::cerr << "Minimizing Using FastK counts!" << std::endl;
+      std::cerr << "[ram::] minimizing using FastK counts" << std::endl;
       while (first != last) {
         std::size_t batch_size = 0;
         std::vector<std::future<std::vector<Kmer>>> futures;
@@ -143,7 +143,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-          //  ++kmer_counts[jt.value];
+         //   ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
@@ -166,7 +166,7 @@ void MinimizerEngine::Minimize(
         }
         for (auto& it : futures) {
           for (const auto& jt : it.get()) {
-    //        ++kmer_counts[jt.value];
+       //     ++kmer_counts[jt.value];
             auto& m = minimizers[jt.value & mask];
             if (m.capacity() == m.size()) {
               m.reserve(m.capacity() * 1.5);
@@ -263,11 +263,13 @@ void MinimizerEngine::Minimize(
 void MinimizerEngine::Filter(double frequency) {
   if (frequency <= 0) {
     occurrence_ = -1;
+    std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
     return;
   }
 
   if(frequency >= 1.0){
     occurrence_ = frequency;
+    std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
     return;
   } else {
     std::vector<std::uint32_t> occurrences;
@@ -283,6 +285,7 @@ void MinimizerEngine::Filter(double frequency) {
 
     if (occurrences.empty()) {
       occurrence_ = -1;
+      std::cerr << "[ram::] frequency threshold set to " << occurrence_ << '\n';
       return;
     }
 
@@ -302,7 +305,7 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     bool avoid_symmetric,
     bool minhash,
     std::vector<std::uint32_t>* filtered) const {
-  auto sketch = MinimizeByCount(sequence);
+  auto sketch = MinimizeFastK(sequence);
   if (sketch.empty()) {
     return std::vector<biosoup::Overlap>{};
   }
@@ -1109,223 +1112,6 @@ std::vector<std::pair<std::uint64_t, float>> MinimizerEngine::SketchRead(
   return dst;
 };
 
-/*void MinimizerEngine::SketchReadInto(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-    std::uint32_t step,
-    std::vector<std::uint64_t>& ids_out,
-    std::vector<float>& counts_out
-) const {
-
-  ids_out.clear();
-  counts_out.clear();
-
-  if (sequence->inflated_len < k_) {
-    return;
-  }
-
-  if (step == 0) {
-    step = 1;  // avoid division by zero / infinite loop
-  }
-
-  // Number of valid k-mer end-positions is (inflated_len - k_ + 1).
-  // With downsampling "every step", reserve ceil(n/step).
-  const std::uint32_t n_valid = sequence->inflated_len - k_ + 1U;
-  const std::size_t out_n = (static_cast<std::size_t>(n_valid) + step - 1U) / step;
-
-  ids_out.reserve(out_n);
-  counts_out.reserve(out_n);
-
-  auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
-    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
-    key = ((~key) + (key << 21));
-    key = key ^ (key >> 24);
-    key = ((key + (key << 3)) + (key << 8));
-    key = key ^ (key >> 14);
-    key = ((key + (key << 2)) + (key << 4));
-    key = key ^ (key >> 28);
-    key = (key + (key << 31));
-    return key;
-  };
-
-  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
-    key &= ~(3ULL << 62);
-    key |= (std::uint64_t(pattern & 3) << 62);
-    return key;
-  };
-
-  auto return_kmer_count = [&] (std::uint64_t value) -> std::uint16_t {
-    const std::uint64_t canon = set_top2(value, 0);
-    return FastKmerCount(canon);
-  };
-
-  std::uint64_t kmer_lo = 0, kmer_hi = 0;
-  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
-
-  const std::uint64_t mask_lo = (k_ <= 32) ? ((1ULL << (2 * k_)) - 1) : ~0ULL;
-  const std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL;
-
-  // Track the 0-based index among valid k-mers (i >= k_-1)
-  std::uint32_t kth = 0;
-
-  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
-    const std::uint64_t c = sequence->Code(i);
-
-    // Forward k-mer
-    if (k_ <= 32) {
-      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
-    } else {
-      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
-      kmer_hi &= mask_hi;
-      kmer_lo = ((kmer_lo << 2) | c);
-    }
-
-    // Reverse-complement k-mer
-    const std::uint64_t rc = c ^ 3;
-    if (k_ <= 32) {
-      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
-      rev_kmer_lo &= mask_lo;
-    } else {
-      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3) << 62);
-      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
-      rev_kmer_hi &= mask_hi;
-    }
-
-    if (i >= k_ - 1U) {
-      // Downsample: keep every `step`-th valid k-mer
-      if ((kth % step) != 0) {
-        ++kth;
-        continue;
-      }
-      ++kth;
-
-      bool fwd_is_min = false;
-
-      if (k_ <= 32) {
-        fwd_is_min = kmer_lo < rev_kmer_lo;
-      } else {
-        if (kmer_hi < rev_kmer_hi) fwd_is_min = true;
-        else if (kmer_hi > rev_kmer_hi) fwd_is_min = false;
-        else fwd_is_min = kmer_lo < rev_kmer_lo;
-      }
-
-      if (fwd_is_min) {
-        const std::uint64_t h = hash2(kmer_hi, kmer_lo);
-        ids_out.emplace_back(set_top2(h, 0));
-        counts_out.emplace_back(static_cast<float>(return_kmer_count(h)));
-      } else {
-        const std::uint64_t h = hash2(rev_kmer_hi, rev_kmer_lo);
-        ids_out.emplace_back(set_top2(h, 0));
-        counts_out.emplace_back(static_cast<float>(return_kmer_count(h)));
-      }
-    }
-  }
-}
-
-std::vector<MinimizerEngine::Kmer> MinimizerEngine::Minimize_64(
-    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-    bool minhash) const {
-  if (sequence->inflated_len < k_) {
-    return std::vector<Kmer>{};
-  }
-
-  // 2k-bit k-mer representation using two 64-bit integers
-  std::uint64_t kmer_lo = 0, kmer_hi = 0;
-  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
-  // For k <= 32, only lo is used. For k > 32, hi holds the upper 2*(k-32) bits, lo holds the lower 64 bits.
-  std::uint64_t mask_lo = (k_ <= 32) ? ((1ULL << (2 * k_)) - 1) : ~0ULL;
-  std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1) : 0xFFFFFFFFFFFFFFFFULL; // always nonzero for k > 32
-  std::uint64_t shift = (k_ > 32) ? 2 * (k_ - 32) : 0;
-
-  // Hashing for two-part k-mer
-  auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
-    // Simple mixing: combine hi and lo, then hash
-    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
-    key = ((~key) + (key << 21));
-    key = key ^ (key >> 24);
-    key = ((key + (key << 3)) + (key << 8));
-    key = key ^ (key >> 14);
-    key = ((key + (key << 2)) + (key << 4));
-    key = key ^ (key >> 28);
-    key = (key + (key << 31));
-    return key;
-  };
-
-  std::deque<Kmer> window;
-  auto window_add = [&] (std::uint64_t value, std::uint64_t location) -> void {
-    while (!window.empty() && window.back().value > value) {
-      window.pop_back();
-    }
-    window.emplace_back(value, location);
-  };
-  auto window_update = [&] (std::uint32_t position) -> void {
-    while (!window.empty() && (window.front().position()) < position) {
-      window.pop_front();
-    }
-  };
-
-  std::uint8_t w_ph = 1;
-  std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
-  std::uint64_t is_stored = 1ULL << 63;
-  std::vector<Kmer> dst;
-
-  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
-    std::uint64_t c = sequence->Code(i);
-
-    // Forward k-mer
-    if (k_ <= 32) {
-      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
-    } else {
-      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
-      kmer_hi &= mask_hi;
-      kmer_lo = ((kmer_lo << 2) | c);
-    }
-
-    // Reverse complement k-mer
-    std::uint64_t rc = c ^ 3;
-    if (k_ <= 32) {
-      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
-      rev_kmer_lo &= mask_lo;
-    } else {
-      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3) << 62);
-      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
-      rev_kmer_hi &= mask_hi;
-    }
-
-    if (i >= k_ - 1U) {
-      // Lexicographical comparison for (hi, lo) pairs
-      bool fwd_is_min = false;
-      if (k_ <= 32) {
-        fwd_is_min = kmer_lo < rev_kmer_lo;
-      } else {
-        if (kmer_hi < rev_kmer_hi) fwd_is_min = true;
-        else if (kmer_hi > rev_kmer_hi) fwd_is_min = false;
-        else fwd_is_min = kmer_lo < rev_kmer_lo;
-      }
-      if (fwd_is_min) {
-        window_add(hash2(kmer_hi, kmer_lo), (i - (k_ - 1U)) << 1 | 0);
-      } else if (!fwd_is_min && (k_ <= 32 ? (kmer_lo > rev_kmer_lo) : (kmer_hi > rev_kmer_hi || (kmer_hi == rev_kmer_hi && kmer_lo > rev_kmer_lo)))) {
-        window_add(hash2(rev_kmer_hi, rev_kmer_lo), (i - (k_ - 1U)) << 1 | 1);
-      }
-    }
-
-    if (i >= (k_ - 1U) + (w_ - 1U)) {
-      for (auto it = window.begin(); it != window.end(); ++it) {
-        if (it->value != window.front().value) {
-          break;
-        }
-        if (it->origin & is_stored) {
-          continue;
-        }
-        dst.emplace_back(it->value, id | it->origin);
-        it->origin |= is_stored;
-      }
-      window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
-    }
-  }
-
-  return dst;
-}*/
-
 void MinimizerEngine::SketchReadInto(
     const std::unique_ptr<biosoup::NucleicAcid>& sequence,
     std::uint32_t step,
@@ -1992,22 +1778,43 @@ std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeByCount(
 }
 
 void MinimizerEngine::LoadFastK(){
-    std::cerr << "Loading Fastk Tables From: " << fastk_counts_ << std::endl;
+    std::cerr << "[ram::] loading Fastk tables from: " << fastk_counts_ << std::endl;
     std::string counts = fastk_counts_ + "/counts";
     std::vector<char> counts_buf(counts.begin(), counts.end());
     counts_buf.push_back('\0');
     fastk_kmer_table_ = ram_fastk_load_kmer_table(counts_buf.data(), 1);
-    std::cerr << "Loaded table" << std::endl;
+    std::cerr << "[ram::] loaded k-mer table" << std::endl;
 
     std::string hist = fastk_counts_ + "/counts";
     std::vector<char> hist_buf(hist.begin(), hist.end());
     hist_buf.push_back('\0');    
     fastk_histogram_= ram_fastk_load_histogram(hist_buf.data());
-    std::cerr << "Loaded hist" << std::endl;
+    std::cerr << "[ram::] loaded hist" << std::endl;
 };
 
 void MinimizerEngine::EstimatePeaksFastK(){
-  cov_ = 53;
+    if (fastk_histogram_ == nullptr) {
+        return;
+    }
+
+    int low = ram_fastk_hist_low(fastk_histogram_);
+    int high = ram_fastk_hist_high(fastk_histogram_);
+
+    int best_peak = -1;
+    int64_t best_value = -1;
+
+    for (int i = low; i <= high; ++i) {
+        if (i <= 10) continue;
+
+        int64_t val = ram_fastk_hist_value(fastk_histogram_, i);
+        if (val > best_value) {
+            best_value = val;
+            best_peak = i;
+        }
+    }
+    std::cerr << "[ram::] peak estimaed using fastk hist: " << best_peak << std::endl;
+    cov_ = best_peak;
+    return;
 }
 
 std::vector<MinimizerEngine::Kmer> MinimizerEngine::MinimizeFastK(
@@ -2105,16 +1912,16 @@ auto unpack_kmer_forward = [](std::uint64_t hi,
     double t_high = (cov_ + (cov_*haploid_coverage_ratio_)) * fraction_;
 
     if (c <= t_low) {
-    //  return set_bits_56_55(hash_no_class, 3); // low frequency
-      return set_top2(hash_no_class, 0); // low frequency
+   //   return set_bits_56_55(hash_no_class, 3); // low frequency
+      return set_top2(hash_no_class, 3); // low frequency
     } else if (c > t_low && c <= t_mid) {
       return set_top2(hash_no_class, 0); // medium 0
     } else if (c > t_mid && c < t_high) {
     //  return set_bits_56_55(hash_no_class, 1); // high
-      return set_top2(hash_no_class, 0); // low frequency 1 
+      return set_top2(hash_no_class, 1); // low frequency 1 
     } else { // c >= t_high
-    //  return set_bits_56_55(hash_no_class, 2); // very high
-     return set_top2(hash_no_class, 0); // low frequency 2 
+     //return set_bits_56_55(hash_no_class, 2); // very high
+      return set_top2(hash_no_class, 2); // low frequency 2 
     }
   };
 
@@ -2175,8 +1982,8 @@ auto unpack_kmer_forward = [](std::uint64_t hi,
       }
     }
 
- //   if (i >= (k_ - 1U) + (w_ - 1U)) {
-    if (i >= (k_ - 1U) + (w_ph - 1U)){
+    if (i >= (k_ - 1U) + (w_ - 1U)) {
+ //   if (i >= (k_ - 1U) + (w_ph - 1U)){
       for (auto it = window.begin(); it != window.end(); ++it) {
         if (it->value != window.front().value) {
           break;
@@ -2187,8 +1994,8 @@ auto unpack_kmer_forward = [](std::uint64_t hi,
         dst.emplace_back(it->value, id | it->origin);
         it->origin |= is_stored;
       }
-     // window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
-      window_update(i - (k_ - 1U) - (w_ph - 1U) + 1);
+      window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
+      //window_update(i - (k_ - 1U) - (w_ph - 1U) + 1);
     }
   }
 

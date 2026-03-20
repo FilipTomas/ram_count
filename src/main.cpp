@@ -267,6 +267,8 @@ int main(int argc, char** argv) {
     std::cerr << "[ram::] counted kmers in targets "
               << std::fixed << timer.Stop() << "s"
               << std::endl;
+              
+    timer.Start();
     minimizer_engine.Minimize(targets.begin(), targets.end(), minhash);
     minimizer_engine.Filter(frequency);
 
