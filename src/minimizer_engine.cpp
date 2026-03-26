@@ -1407,19 +1407,26 @@ void MinimizerEngine::FastKSketchReadInto(
           fwd_is_min = kmer_lo < rev_kmer_lo;
         }
       }
-
       if (fwd_is_min) {
         const std::uint64_t h = hash2(kmer_hi, kmer_lo);
         ids_out.emplace_back(set_top2(h, 0));
-        counts_out.emplace_back(
-            static_cast<float>(fastk_get_count(kmer_hi, kmer_lo, k_)));
+
+        const std::uint32_t raw_count = fastk_get_count(kmer_hi, kmer_lo, k_);
+        const float clipped_count =
+            static_cast<float>(std::min<std::uint32_t>(raw_count, 4*cov_));
+        counts_out.emplace_back(clipped_count);
+
         avg_qualities.emplace_back(avg_q);
         min_qualities.emplace_back(min_q);
       } else {
         const std::uint64_t h = hash2(rev_kmer_hi, rev_kmer_lo);
         ids_out.emplace_back(set_top2(h, 0));
-        counts_out.emplace_back(
-            static_cast<float>(fastk_get_count(rev_kmer_hi, rev_kmer_lo, k_)));
+
+        const std::uint32_t raw_count = fastk_get_count(rev_kmer_hi, rev_kmer_lo, k_);
+        const float clipped_count =
+            static_cast<float>(std::min<std::uint32_t>(raw_count, 4*cov_));
+        counts_out.emplace_back(clipped_count);
+
         avg_qualities.emplace_back(avg_q);
         min_qualities.emplace_back(min_q);
       }
