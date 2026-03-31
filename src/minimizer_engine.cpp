@@ -178,21 +178,21 @@ void MinimizerEngine::Minimize(
     }
   }
 
-  auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
-      key &= ~ (3ULL << 62);                  // clear bits 63-62
-      key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
-              << 62);                         // move into bit-63/62 slots
-      return key;
-  };
+  // auto set_top2 = [&] (std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+  //     key &= ~ (3ULL << 62);                  // clear bits 63-62
+  //     key |= (std::uint64_t(pattern & 3)      // keep only 2 bits
+  //             << 62);                         // move into bit-63/62 slots
+  //     return key;
+  // };
 
 
-    std::ofstream minimizer_file("minimizer_counts.txt");
-    for(const auto& it : kmer_counts){
-        std::uint64_t stored_key = set_top2(it.first,0);
-        minimizer_file << stored_key << "\t" << it.second << std::endl;
-      }
-    minimizer_file.close();
-    exit(0);
+  //   std::ofstream minimizer_file("minimizer_counts.txt");
+  //   for(const auto& it : kmer_counts){
+  //       std::uint64_t stored_key = set_top2(it.first,0);
+  //       minimizer_file << stored_key << "\t" << it.second << std::endl;
+  //     }
+  //   minimizer_file.close();
+  //   exit(0);
 
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
