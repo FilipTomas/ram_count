@@ -37,7 +37,8 @@ MinimizerEngine::MinimizerEngine(
     std::uint32_t cov,
     float haploid_coverage_ratio,
     std::string fastk_count_path,
-    bool use_minimizers)
+    bool use_minimizers,
+    std::uint32_t max_kmer_count)
   : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
   , w_(w)
   , bandwidth_(bandwidth)
@@ -53,6 +54,7 @@ MinimizerEngine::MinimizerEngine(
   , haploid_coverage_ratio_(haploid_coverage_ratio)
   , fastk_counts_(fastk_count_path)
   , use_minimizers_(use_minimizers)
+  , max_kmer_count_(max_kmer_count)
 {}
 
 std::uint32_t MinimizerEngine::Index::Find(
@@ -1413,7 +1415,7 @@ void MinimizerEngine::FastKSketchReadInto(
 
         const std::uint32_t raw_count = fastk_get_count(kmer_hi, kmer_lo, k_);
         const float clipped_count =
-            static_cast<float>(std::min<std::uint32_t>(raw_count, 200));
+            static_cast<float>(std::min<std::uint32_t>(raw_count, max_kmer_count_));
         counts_out.emplace_back(clipped_count);
 
         avg_qualities.emplace_back(avg_q);
@@ -1424,7 +1426,7 @@ void MinimizerEngine::FastKSketchReadInto(
 
         const std::uint32_t raw_count = fastk_get_count(rev_kmer_hi, rev_kmer_lo, k_);
         const float clipped_count =
-            static_cast<float>(std::min<std::uint32_t>(raw_count, 200));
+            static_cast<float>(std::min<std::uint32_t>(raw_count, max_kmer_count_));
         counts_out.emplace_back(clipped_count);
 
         avg_qualities.emplace_back(avg_q);

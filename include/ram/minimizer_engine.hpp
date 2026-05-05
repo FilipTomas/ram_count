@@ -33,7 +33,8 @@ class MinimizerEngine {
       std::uint32_t cov = 0,
       float haploid_coverage_ratio = 0.5f,
       std::string fastk_count_path = "",
-      bool use_minimizers = false);
+      bool use_minimizers = false,
+      std::uint32_t max_kmer_count = 200);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
   MinimizerEngine& operator=(const MinimizerEngine&) = delete;
@@ -313,6 +314,7 @@ private:
   std::string fastk_counts_;
   float diploid_coverage_;
   float haploid_coverage_ratio_;
+  std::uint32_t max_kmer_count_;
 };
 
 }  // namespace ram
