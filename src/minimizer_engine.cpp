@@ -38,7 +38,8 @@ MinimizerEngine::MinimizerEngine(
     float haploid_coverage_ratio,
     std::string fastk_count_path,
     bool use_minimizers,
-    std::uint32_t max_kmer_count)
+    std::uint32_t max_kmer_count,
+    std::uint32_t max_rep_hits)
   : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
   , w_(w)
   , bandwidth_(bandwidth)
@@ -55,6 +56,7 @@ MinimizerEngine::MinimizerEngine(
   , fastk_counts_(fastk_count_path)
   , use_minimizers_(use_minimizers)
   , max_kmer_count_(max_kmer_count)
+  , max_rep_hits_(max_rep_hits)
 {}
 
 std::uint32_t MinimizerEngine::Index::Find(
@@ -369,7 +371,34 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     std::uint32_t i = kmer.value & mask;
     const uint64_t* origins = nullptr;
     auto n = index_[i].Find(kmer.value, &origins);
+
+    std::uint8_t cls = static_cast<std::uint8_t>(kmer.value >> 62);
+
     if (n > occurrence_) {
+        if (cls == 2) {
+            // repetitive minimizer above normal threshold:
+            // allow through but cap hits to avoid combinatorial explosion
+            std::uint32_t capped = std::min(n, max_rep_hits_);
+            for (std::uint32_t j = 0; j < capped; ++j, ++origins) {
+                add_match(kmer, *origins);
+            }
+        } else {
+            // normal high-frequency minimizer: discard as before
+            filtered_hits.emplace_back(&kmer, n, origins);
+            if (filtered) {
+                filtered->emplace_back(kmer.position());
+            }
+        }
+        continue;
+    }
+
+    filtered_hits.clear();
+    prev = kmer.position();
+
+    for (; n; n--, ++origins) {
+        add_match(kmer, *origins);
+    }
+/*    if (n > occurrence_) {
       filtered_hits.emplace_back(&kmer, n, origins);
       if (filtered) {
         filtered->emplace_back(kmer.position());
@@ -391,45 +420,13 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     //     }
     //   }
     // }
-    //filtered_hits.clear();
-    //prev = kmer.position();
-
-    // std::uint32_t curr_pos = kmer.position();
-
-    // // handle unsigned underflow safely
-    // std::uint32_t delta = (curr_pos >= prev) ? (curr_pos - prev) : 0;
-
-    // // turn distance into a count; guard bandwidth_ == 0
-    // std::size_t want = (bandwidth_ > 0) ? static_cast<std::size_t>(delta) / static_cast<std::size_t>(bandwidth_) : 0;
-
-    // std::size_t rescuees = std::min(want, filtered_hits.size());
-    // if (rescuees) {
-    //   // Bring the smallest-n rescuees to the front in O(n)
-    //   auto mid = filtered_hits.begin() + static_cast<std::ptrdiff_t>(rescuees);
-    //   std::nth_element(filtered_hits.begin(), mid, filtered_hits.end(),
-    //                   [](const Hit& a, const Hit& b){ return a.n < b.n; });
-
-    //   // Optionally sort just that rescued prefix for determinism (small cost)
-    //   std::sort(filtered_hits.begin(), mid,
-    //             [](const Hit& a, const Hit& b){ return a.n < b.n; });
-
-    //   // Emit matches for those rescuees
-    //   for (auto it = filtered_hits.begin(); it != mid; ++it) {
-    //     const Kmer* k = it->kmer;
-    //     const uint64_t* origins = it->origins;
-    //     std::uint32_t nleft = it->n;
-    //     for (; nleft; --nleft, ++origins) {
-    //       add_match(*k, *origins);
-    //     }
-    //   }
-    // }
 
     filtered_hits.clear();
     prev = kmer.position();
 
     for (; n; n--, ++origins) {
       add_match(kmer, *origins);
-    }
+    }*/
   }
 
   return Chain(sequence->id, std::move(matches));

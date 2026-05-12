@@ -33,6 +33,7 @@ static struct option options[] = {
   {"threads", required_argument, nullptr, 't'},
   {"fastk_counts", required_argument, nullptr, 'K'},
   {"haploid_coverage_ratio", required_argument, nullptr, 'R'},
+  {"max_rep_hits", required_argument, nullptr, 'r'},
   {"version", no_argument, nullptr, 'v'},
   {"help", no_argument, nullptr, 'h'},
   {nullptr, 0, nullptr, 0}
@@ -110,7 +111,7 @@ void Help() {
       "       fraction of reads used to count kmers\n"
       "    -C <int>\n"
       "      default: 0\n"
-      "      expected haploid coverage of the genome\n"
+      "      expected diploid coverage of the genome\n"
       "    -t, --threads <int>\n"
       "      default: 1\n"
       "      number of threads\n"
@@ -137,10 +138,11 @@ int main(int argc, char** argv) {
   std::uint32_t num_threads = 1;
   std::string fastk_counts_path = "";
   float haploid_coverage_ratio = 0.5f;
+  std::uint32_t max_rep_hits = 50;
 
   std::vector<std::string> input_paths;
 
-  const char* optstr = "k:w:f:t:h:C:K:R:N";
+  const char* optstr = "k:w:f:t:h:C:K:R:r:N";
   char arg;
   while ((arg = getopt_long(argc, argv, optstr, options, nullptr)) != -1) {
     switch (arg) {
@@ -158,6 +160,7 @@ int main(int argc, char** argv) {
       case 'K': fastk_counts_path = std::string(optarg); break;
       case 'R': haploid_coverage_ratio = std::atof(optarg); break;
       case 'N': use_minimizers = true; break;
+      case 'r': max_rep_hits = std::atof(optarg); break;
       case 'v': std::cout << VERSION << std::endl; return 0;
       case 'h': Help(); return 0;
       default: return 1;
@@ -209,7 +212,9 @@ int main(int argc, char** argv) {
       cov,
       haploid_coverage_ratio,
       fastk_counts_path,
-      use_minimizers};
+      use_minimizers,
+      200,
+      max_rep_hits};
 
   biosoup::Timer timer{};
 
