@@ -39,7 +39,12 @@ MinimizerEngine::MinimizerEngine(
     std::string fastk_count_path,
     bool use_minimizers,
     std::uint32_t max_kmer_count,
-    std::uint32_t max_rep_hits)
+    std::uint32_t max_rep_hits,
+    std::uint32_t repetitive_bandwidth,
+    std::uint32_t repetitive_chain,
+    std::uint32_t repetitive_matches,
+    std::uint32_t repetitive_gap,
+    std::uint32_t repetitive_n_hits)
   : k_(std::min<std::uint32_t>(std::max(k, 1U), 62U))
   , w_(w)
   , bandwidth_(bandwidth)
@@ -57,6 +62,11 @@ MinimizerEngine::MinimizerEngine(
   , use_minimizers_(use_minimizers)
   , max_kmer_count_(max_kmer_count)
   , max_rep_hits_(max_rep_hits)
+  , repetitive_bandwidth_(repetitive_bandwidth)
+  , repetitive_chain_(repetitive_chain)
+  , repetitive_matches_(repetitive_matches)
+  , repetitive_gap_(repetitive_gap)
+  , repetitive_n_hits_(repetitive_n_hits)
 {}
 
 std::uint32_t MinimizerEngine::Index::Find(
@@ -372,23 +382,23 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     const uint64_t* origins = nullptr;
     auto n = index_[i].Find(kmer.value, &origins);
 
-    std::uint8_t cls = static_cast<std::uint8_t>(kmer.value >> 62);
+  //  std::uint8_t cls = static_cast<std::uint8_t>(kmer.value >> 62);
 
     if (n > occurrence_) {
-        if (cls == 2) {
-            // repetitive minimizer above normal threshold:
-            // allow through but cap hits to avoid combinatorial explosion
-            std::uint32_t capped = std::min(n, max_rep_hits_);
-            for (std::uint32_t j = 0; j < capped; ++j, ++origins) {
-                add_match(kmer, *origins);
-            }
-        } else {
+        // if (cls == 2) {
+        //     // repetitive minimizer above normal threshold:
+        //     // allow through but cap hits to avoid combinatorial explosion
+        //     std::uint32_t capped = std::min(n, max_rep_hits_);
+        //     for (std::uint32_t j = 0; j < capped; ++j, ++origins) {
+        //         add_match(kmer, *origins);
+        //     }
+        // } else {
             // normal high-frequency minimizer: discard as before
             filtered_hits.emplace_back(&kmer, n, origins);
             if (filtered) {
                 filtered->emplace_back(kmer.position());
             }
-        }
+       // }
         continue;
     }
 
@@ -602,7 +612,195 @@ std::vector<biosoup::Overlap> MinimizerEngine::Chain(
   return dst;
 }
 
-  
+std::vector<biosoup::Overlap> MinimizerEngine::MapRepetitive(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    bool avoid_equal,
+    bool avoid_symmetric,
+    bool minhash,
+    std::vector<std::uint32_t>* filtered) const {
+  auto sketch = MinimizeFastK(sequence);
+  if (sketch.empty()) {
+    return std::vector<biosoup::Overlap>{};
+  }
+
+  std::vector<Match> matches;
+  auto add_match = [&] (const Kmer& kmer, uint64_t origin) -> void {
+    auto id = [] (std::uint64_t origin) -> std::uint32_t {
+      return static_cast<std::uint32_t>(origin >> 32);
+    };
+    auto position = [] (std::uint64_t origin) -> std::uint32_t {
+      return static_cast<std::uint32_t>(origin) >> 1;
+    };
+    auto strand = [] (std::uint64_t origin) -> bool {
+      return origin & 1;
+    };
+
+    if (avoid_equal && sequence->id == id(origin)) {
+      return;
+    }
+    if (avoid_symmetric && sequence->id > id(origin)) {
+      return;
+    }
+
+    std::uint64_t rhs_id = id(origin);
+    std::uint64_t strand_ = kmer.strand() == strand(origin);
+    std::uint64_t lhs_pos = kmer.position();
+    std::uint64_t rhs_pos = position(origin);
+    std::uint64_t diagonal = !strand_ ?
+        rhs_pos + lhs_pos :
+        rhs_pos - lhs_pos + (3ULL << 30);
+
+    matches.emplace_back(
+        (((rhs_id << 1) | strand_) << 32) | diagonal,
+        (lhs_pos << 32) | rhs_pos);
+  };
+
+  std::uint64_t mask = index_.size() - 1;
+
+  sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
+
+  for (const auto& kmer : sketch) {
+    std::uint32_t i = kmer.value & mask;
+    const uint64_t* origins = nullptr;
+    auto n = index_[i].Find(kmer.value, &origins);
+
+    if (n > occurrence_) {
+      // cap all high-frequency k-mers; don't discard any
+      std::uint32_t capped = std::min(n, repetitive_n_hits_);
+      for (std::uint32_t j = 0; j < capped; ++j, ++origins) {
+        add_match(kmer, *origins);
+      }
+      if (filtered) {
+        filtered->emplace_back(kmer.position());
+      }
+      continue;
+    }
+
+    for (; n; n--, ++origins) {
+      add_match(kmer, *origins);
+    }
+  }
+
+  return ChainRepetitive(sequence->id, std::move(matches));
+}
+
+std::vector<biosoup::Overlap> MinimizerEngine::ChainRepetitive(
+    std::uint64_t lhs_id,
+    std::vector<Match>&& matches) const {
+  RadixSort(matches.begin(), matches.end(), 64, Match::SortByGroup);
+  matches.emplace_back(-1, -1);  // stop dummy
+
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> intervals;
+  for (std::uint64_t i = 1, j = 0; i < matches.size(); ++i) {  // NOLINT
+    if (matches[i].group - matches[j].group > repetitive_bandwidth_) {
+      if (i - j >= 4) {
+        if (!intervals.empty() && intervals.back().second > j) {  // extend
+          intervals.back().second = i;
+        } else {  // new
+          intervals.emplace_back(j, i);
+        }
+      }
+      ++j;
+      while (j < i && matches[i].group - matches[j].group > repetitive_bandwidth_) {
+        ++j;
+      }
+    }
+  }
+
+  std::vector<biosoup::Overlap> dst;
+  for (const auto& it : intervals) {
+    std::uint64_t j = it.first;
+    std::uint64_t i = it.second;
+
+    if (i - j < repetitive_chain_) {
+      continue;
+    }
+
+    RadixSort(
+        matches.begin() + j,
+        matches.begin() + i,
+        64,
+        Match::SortByPositions);
+
+    std::uint64_t strand = matches[j].strand();
+
+    std::vector<std::uint64_t> indices;
+    if (strand) {  // same strand
+      indices = LongestSubsequence(
+          matches.begin() + j,
+          matches.begin() + i,
+          std::less<std::uint64_t>());
+    } else {  // different strand
+      indices = LongestSubsequence(
+          matches.begin() + j,
+          matches.begin() + i,
+          std::greater<std::uint64_t>());
+    }
+
+    if (indices.size() < repetitive_chain_) {
+      continue;
+    }
+
+    indices.emplace_back(matches.size() - 1 - j);  // stop dummy from above
+    for (std::uint64_t k = 1, l = 0; k < indices.size(); ++k) {
+      if (matches[j + indices[k]].lhs_position() -
+          matches[j + indices[k - 1]].lhs_position() > repetitive_gap_) {
+        if (k - l < repetitive_chain_) {
+          l = k;
+          continue;
+        }
+
+        std::uint32_t lhs_matches = 0;
+        std::uint32_t lhs_begin = 0;
+        std::uint32_t lhs_end = 0;
+        std::uint32_t rhs_matches = 0;
+        std::uint32_t rhs_begin = 0;
+        std::uint32_t rhs_end = 0;
+
+        for (std::uint64_t m = l; m < k; ++m) {
+          std::uint32_t lhs_pos = matches[j + indices[m]].lhs_position();
+          if (lhs_pos > lhs_end) {
+            lhs_matches += lhs_end - lhs_begin;
+            lhs_begin = lhs_pos;
+          }
+          lhs_end = lhs_pos + k_;
+
+          std::uint32_t rhs_pos = matches[j + indices[m]].rhs_position();
+          rhs_pos = strand ? rhs_pos : (1U << 31) - (rhs_pos + k_ - 1);
+          if (rhs_pos > rhs_end) {
+            rhs_matches += rhs_end - rhs_begin;
+            rhs_begin = rhs_pos;
+          }
+          rhs_end = rhs_pos + k_;
+        }
+        lhs_matches += lhs_end - lhs_begin;
+        rhs_matches += rhs_end - rhs_begin;
+        if (std::min(lhs_matches, rhs_matches) < repetitive_matches_) {
+          l = k;
+          continue;
+        }
+
+        dst.emplace_back(
+            lhs_id,
+            matches[j + indices[l]].lhs_position(),
+            k_ + matches[j + indices[k - 1]].lhs_position(),
+            matches[j].rhs_id(),
+            strand ?
+                matches[j + indices[l]].rhs_position() :
+                matches[j + indices[k - 1]].rhs_position(),
+            k_ + (strand ?
+                matches[j + indices[k - 1]].rhs_position() :
+                matches[j + indices[l]].rhs_position()),
+            std::min(lhs_matches, rhs_matches),
+            strand);
+
+        l = k;
+      }
+    }
+  }
+  return dst;
+}
+
 static std::size_t get_nearest_height(const std::map<std::size_t, std::size_t>& hist,
                                       std::size_t key) {
   if (hist.empty()) return 0u;

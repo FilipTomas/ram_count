@@ -23,19 +23,24 @@ class MinimizerEngine {
  public:
   MinimizerEngine(
       std::shared_ptr<thread_pool::ThreadPool> thread_pool = nullptr,
-      std::uint32_t k = 15,  // element of [1, 31]
-      std::uint32_t w = 5,
+      std::uint32_t k = 21,  // element of [1, 31]
+      std::uint32_t w = 21,
       std::uint32_t bandwidth = 500,
       std::uint32_t chain = 4,
-      std::uint32_t matches = 100,
+      std::uint32_t matches = 150,
       std::uint32_t gap = 10000,
-      double fraction = 1, 
-      std::uint32_t cov = 0,
+      double fraction = 1,
+      std::uint32_t cov = 50,
       float haploid_coverage_ratio = 0.5f,
       std::string fastk_count_path = "",
       bool use_minimizers = false,
       std::uint32_t max_kmer_count = 200,
-      std::uint32_t max_rep_hits = 50);
+      std::uint32_t max_rep_hits = 50,
+      std::uint32_t repetitive_bandwidth = 500,
+      std::uint32_t repetitive_chain = 4,
+      std::uint32_t repetitive_matches = 150,
+      std::uint32_t repetitive_gap = 10000,
+      std::uint32_t repetitive_n_hits = 50);
 
   MinimizerEngine(const MinimizerEngine&) = delete;
   MinimizerEngine& operator=(const MinimizerEngine&) = delete;
@@ -111,12 +116,15 @@ void FastKSketchReadInto(
       const std::unique_ptr<biosoup::NucleicAcid>& rhs,
       bool minhash = false) const;  // only lhs
 
-  // std::vector<biosoup::Overlap> MinimizerEngine::Map_repetitive(
-  //   const std::unique_ptr<biosoup::NucleicAcid>& sequence,
-  //   bool avoid_equal,
-  //   bool avoid_symmetric,
-  //   bool minhash,
-  //   std::vector<std::uint32_t>* filtered) const;
+  // like Map but treats the read as highly repetitive:
+  // all high-frequency k-mers are capped to repetitive_n_hits_ instead of
+  // being discarded, then chains with tighter repetitive_* parameters
+  std::vector<biosoup::Overlap> MapRepetitive(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+      bool avoid_equal,
+      bool avoid_symmetric,
+      bool minhash = false,
+      std::vector<std::uint32_t>* filtered = nullptr) const;
 
   std::uint32_t het_peak() const {
     return het_peak_;
@@ -272,6 +280,10 @@ private:
       std::uint64_t lhs_id,
       std::vector<Match>&& matches) const;
 
+  std::vector<biosoup::Overlap> ChainRepetitive(
+      std::uint64_t lhs_id,
+      std::vector<Match>&& matches) const;
+
   template<typename RandomAccessIterator, typename Compare>
   static void RadixSort(
       RandomAccessIterator first,
@@ -319,6 +331,12 @@ private:
   // alongside existing occurrence_ member
   std::uint32_t occurrence_rep_ = std::numeric_limits<std::uint32_t>::max();
   std::uint32_t max_rep_hits_;
+  // parameters used by MapRepetitive / ChainRepetitive
+  std::uint32_t repetitive_bandwidth_;
+  std::uint32_t repetitive_chain_;
+  std::uint32_t repetitive_matches_;
+  std::uint64_t repetitive_gap_;
+  std::uint32_t repetitive_n_hits_;
 };
 
 }  // namespace ram

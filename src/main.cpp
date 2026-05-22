@@ -124,14 +124,14 @@ void Help() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::uint32_t k = 15;
-  std::uint32_t w = 5;
+  std::uint32_t k = 21;
+  std::uint32_t w = 21;
   std::uint32_t bandwidth = 500;
   std::uint32_t chain = 4;
-  std::uint32_t matches = 100;
+  std::uint32_t matches = 150;
   std::uint32_t gap = 10000;
-  std::uint32_t cov = 0;
-  double frequency = 0.001;
+  std::uint32_t cov = 50;
+  double frequency = 1000;
   bool minhash = false;
   float fraction = 1;
   bool use_minimizers = false;
