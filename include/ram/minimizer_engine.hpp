@@ -99,6 +99,38 @@ void FastKSketchReadInto(
     std::vector<std::uint32_t> & min_qualities
 ) const;
 
+  // Single-pass fusion of FastKSketchReadInto + MinimizeFastK.
+  // Performs one rolling-hash pass over the read with ONE FastK count lookup
+  // per position, feeding both:
+  //   (a) the per-position sketch features returned via the out-params
+  //       (identical to FastKSketchReadInto), and
+  //   (b) the read's minimizer sketch, stored internally in read_minimizers_
+  //       (indexed by sequence->id) for later reuse by BuildIndexFromStored()
+  //       and Map()/MapRepetitive().
+  // InitReadStore() must have been called first with a size > sequence->id.
+  void SketchAndMinimizeFastK(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+      std::uint32_t step,
+      std::vector<std::uint64_t>& ids_out,
+      std::vector<float>& counts_out,
+      std::vector<std::uint32_t>& avg_qualities,
+      std::vector<std::uint32_t>& min_qualities);
+
+  // Allocate the per-read minimizer store (one slot per sequence id).
+  void InitReadStore(std::size_t num_sequences);
+  // Release the whole store.
+  void ClearReadStore();
+  // Release the stored minimizers for a range of reads (frees block memory).
+  void FreeReadStoreRange(
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last);
+
+  // Build the minimizer index from sketches previously produced by
+  // SketchAndMinimizeFastK (no re-minimizing / no FastK lookups).
+  void BuildIndexFromStored(
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+      std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last);
+
   // set occurrence frequency threshold
   void Filter(double frequency);
 
@@ -273,6 +305,15 @@ private:
   std::vector<Kmer> MinimizeFastK(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
+  // Return the read's stored minimizer sketch if present, otherwise recompute
+  // it with MinimizeFastK. Used by Map()/MapRepetitive() to skip re-minimizing.
+  std::vector<Kmer> StoredSketchOrMinimize(
+      const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
+
+  // Shared tail of index construction: sort each bucket and build the locator.
+  // Consumes (empties) the per-bucket minimizer vectors.
+  void FinalizeIndex(std::vector<std::vector<Kmer>>& minimizers);
+
   // std::vector<Kmer> MinimizeRepetitiveByCount(
   //   const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
@@ -312,6 +353,9 @@ private:
   std::uint64_t gap_;
   std::uint32_t occurrence_;
   std::vector<Index> index_;
+  // Per-read minimizer sketches, indexed by sequence->id. Populated by
+  // SketchAndMinimizeFastK, consumed by BuildIndexFromStored and Map.
+  std::vector<std::vector<Kmer>> read_minimizers_;
   std::shared_ptr<thread_pool::ThreadPool> thread_pool_;
   std::uint32_t het_peak_ = 25;
   std::uint32_t het_std_;  // peak of heterogeneity in the minimizer index

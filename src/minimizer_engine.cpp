@@ -208,6 +208,10 @@ void MinimizerEngine::Minimize(
   //   minimizer_file.close();
   //   exit(0);
 
+  FinalizeIndex(minimizers);
+}
+
+void MinimizerEngine::FinalizeIndex(std::vector<std::vector<Kmer>>& minimizers) {
   {
     std::vector<std::future<std::pair<std::size_t, std::size_t>>> futures;
     for (std::uint32_t i = 0; i < minimizers.size(); ++i) {
@@ -274,6 +278,68 @@ void MinimizerEngine::Minimize(
   }
 }
 
+void MinimizerEngine::InitReadStore(std::size_t num_sequences) {
+  read_minimizers_.assign(num_sequences, std::vector<Kmer>{});
+}
+
+void MinimizerEngine::ClearReadStore() {
+  std::vector<std::vector<Kmer>>().swap(read_minimizers_);
+}
+
+void MinimizerEngine::FreeReadStoreRange(
+    std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+    std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last) {
+  for (auto it = first; it != last; ++it) {
+    const std::uint32_t id = (*it)->id;
+    if (id < read_minimizers_.size()) {
+      std::vector<Kmer>().swap(read_minimizers_[id]);
+    }
+  }
+}
+
+std::vector<MinimizerEngine::Kmer> MinimizerEngine::StoredSketchOrMinimize(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence) const {
+  const std::uint32_t id = sequence->id;
+  if (id < read_minimizers_.size() && !read_minimizers_[id].empty()) {
+    return read_minimizers_[id];  // copy; caller appends a stop dummy
+  }
+  return MinimizeFastK(sequence);
+}
+
+void MinimizerEngine::BuildIndexFromStored(
+    std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
+    std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last) {
+  for (auto& it : index_) {
+    it.origins.clear();
+    it.locator.clear();
+  }
+
+  std::cerr << "[ram::MinimizerEngine::BuildIndexFromStored] building minimizer "
+               "index from stored sketches..."
+            << std::endl;
+  if (first >= last) {
+    return;
+  }
+
+  std::vector<std::vector<Kmer>> minimizers(index_.size());
+  const std::uint64_t mask = index_.size() - 1;
+  for (auto it = first; it != last; ++it) {
+    const std::uint32_t id = (*it)->id;
+    if (id >= read_minimizers_.size()) {
+      continue;
+    }
+    for (const auto& jt : read_minimizers_[id]) {
+      auto& m = minimizers[jt.value & mask];
+      if (m.capacity() == m.size()) {
+        m.reserve(m.capacity() * 1.5);
+      }
+      m.emplace_back(jt);
+    }
+  }
+
+  FinalizeIndex(minimizers);
+}
+
 void MinimizerEngine::Filter(double frequency) {
   if (frequency <= 0) {
     occurrence_ = -1;
@@ -319,7 +385,7 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     bool avoid_symmetric,
     bool minhash,
     std::vector<std::uint32_t>* filtered) const {
-  auto sketch = MinimizeFastK(sequence);
+  auto sketch = StoredSketchOrMinimize(sequence);
   if (sketch.empty()) {
     return std::vector<biosoup::Overlap>{};
   }
@@ -618,7 +684,7 @@ std::vector<biosoup::Overlap> MinimizerEngine::MapRepetitive(
     bool avoid_symmetric,
     bool minhash,
     std::vector<std::uint32_t>* filtered) const {
-  auto sketch = MinimizeFastK(sequence);
+  auto sketch = StoredSketchOrMinimize(sequence);
   if (sketch.empty()) {
     return std::vector<biosoup::Overlap>{};
   }
@@ -1628,6 +1694,261 @@ void MinimizerEngine::FastKSketchReadInto(
         min_qualities.emplace_back(min_q);
       }
     }
+  }
+}
+
+void MinimizerEngine::SketchAndMinimizeFastK(
+    const std::unique_ptr<biosoup::NucleicAcid>& sequence,
+    std::uint32_t step,
+    std::vector<std::uint64_t>& ids_out,
+    std::vector<float>& counts_out,
+    std::vector<std::uint32_t>& avg_qualities,
+    std::vector<std::uint32_t>& min_qualities) {
+
+  ids_out.clear();
+  counts_out.clear();
+  avg_qualities.clear();
+  min_qualities.clear();
+
+  // Reset this read's minimizer slot up front, so a too-short read leaves it
+  // empty (Map() then falls back to recomputation for it).
+  if (sequence->id < read_minimizers_.size()) {
+    read_minimizers_[sequence->id].clear();
+  }
+
+  if (sequence->inflated_len < k_) {
+    return;
+  }
+  if (step == 0) {
+    step = 1;
+  }
+
+  const std::uint32_t n_valid = sequence->inflated_len - k_ + 1U;
+  const std::size_t out_n =
+      (static_cast<std::size_t>(n_valid) + step - 1U) / step;
+  ids_out.reserve(out_n);
+  counts_out.reserve(out_n);
+  avg_qualities.reserve(out_n);
+  min_qualities.reserve(out_n);
+
+  // Prefix sums of per-base numeric Phred qualities.
+  std::vector<std::uint32_t> quality_prefix(sequence->inflated_len + 1, 0);
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    quality_prefix[i + 1] = quality_prefix[i] +
+        static_cast<std::uint32_t>(sequence->Score(i));
+  }
+
+  auto hash2 = [&](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
+    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
+    key = ((~key) + (key << 21));
+    key = key ^ (key >> 24);
+    key = ((key + (key << 3)) + (key << 8));
+    key = key ^ (key >> 14);
+    key = ((key + (key << 2)) + (key << 4));
+    key = key ^ (key >> 28);
+    key = (key + (key << 31));
+    return key;
+  };
+
+  auto set_top2 = [&](std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+    key &= ~(3ULL << 62);
+    key |= (static_cast<std::uint64_t>(pattern & 3) << 62);
+    return key;
+  };
+
+  auto unpack_kmer_forward = [](
+      std::uint64_t hi,
+      std::uint64_t lo,
+      std::uint32_t k,
+      char* out
+  ) -> void {
+    const std::uint32_t tail = (k > 32 ? 32 : k);
+    std::uint64_t cur_lo = lo;
+    std::uint64_t cur_hi = hi;
+
+    for (std::int32_t pos = static_cast<std::int32_t>(k) - 1;
+         pos >= static_cast<std::int32_t>(k - tail);
+         --pos) {
+      out[pos] = static_cast<char>(cur_lo & 0x3ULL);
+      cur_lo >>= 2;
+    }
+
+    for (std::int32_t pos = static_cast<std::int32_t>(k - tail) - 1;
+         pos >= 0;
+         --pos) {
+      out[pos] = static_cast<char>(cur_hi & 0x3ULL);
+      cur_hi >>= 2;
+    }
+  };
+
+  auto map_0123_to_ACGT = [](char* buf, std::uint32_t n) -> void {
+    static constexpr char lut[4] = {'a', 'c', 'g', 't'};
+    for (std::uint32_t i = 0; i < n; ++i) {
+      buf[i] = lut[static_cast<unsigned char>(buf[i]) & 3];
+    }
+  };
+
+  auto fastk_get_count = [&](std::uint64_t hi,
+                             std::uint64_t lo,
+                             std::uint32_t k) -> std::uint32_t {
+    if (!fastk_kmer_table_) {
+      return 0;
+    }
+    char buf[64];
+    unpack_kmer_forward(hi, lo, k, buf);
+    map_0123_to_ACGT(buf, k);
+    const auto idx = ram_fastk_find_kmer(fastk_kmer_table_, buf);
+    if (idx < 0) {
+      return 0;
+    }
+    return static_cast<std::uint32_t>(
+        ram_fastk_fetch_count(fastk_kmer_table_, idx));
+  };
+
+  // Classification identical to MinimizeFastK::classify_kmer, but operating on
+  // the already-fetched count so no second FastK lookup is performed.
+  auto class_from_count = [&](std::uint32_t count) -> std::uint8_t {
+    if (count == 0) {
+      return 0;
+    }
+    const double c = static_cast<double>(count);
+    const double t_low  = ((cov_ * haploid_coverage_ratio_) / 4.0) * fraction_;
+    const double t_mid  = ((cov_ * haploid_coverage_ratio_) +
+                           (cov_ - (cov_ * haploid_coverage_ratio_)) / 2.0) * fraction_;
+    const double t_high = (cov_ + (cov_ * haploid_coverage_ratio_)) * fraction_;
+    if (c <= t_low) {
+      return 3;
+    } else if (c <= t_mid) {
+      return 0;
+    } else if (c < t_high) {
+      return 1;
+    } else {
+      return 2;
+    }
+  };
+
+  std::uint64_t kmer_lo = 0, kmer_hi = 0;
+  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
+  const std::uint64_t mask_lo =
+      (k_ < 32) ? ((1ULL << (2 * k_)) - 1ULL) : ~0ULL;
+  const std::uint64_t mask_hi =
+      (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1ULL)
+                : 0xFFFFFFFFFFFFFFFFULL;
+
+  std::uint32_t kth = 0;
+
+  // Sliding-window minimum over per-base qualities: (position, quality).
+  std::deque<std::pair<std::uint32_t, std::uint32_t>> min_deque;
+
+  // Minimizer selection window (monotonic by value), mirroring MinimizeFastK.
+  std::deque<Kmer> window;
+  auto window_add = [&](std::uint64_t value, std::uint64_t location) -> void {
+    while (!window.empty() && window.back().value > value) {
+      window.pop_back();
+    }
+    window.emplace_back(value, location);
+  };
+  auto window_update = [&](std::uint32_t position) -> void {
+    while (!window.empty() && (window.front().position()) < position) {
+      window.pop_front();
+    }
+  };
+
+  const std::uint64_t id = static_cast<std::uint64_t>(sequence->id) << 32;
+  const std::uint64_t is_stored = 1ULL << 63;
+  std::vector<Kmer> dst;
+
+  for (std::uint32_t i = 0; i < sequence->inflated_len; ++i) {
+    const std::uint64_t c = sequence->Code(i);
+    const std::uint32_t q_base =
+        static_cast<std::uint32_t>(sequence->Score(i));
+
+    while (!min_deque.empty() && min_deque.back().second >= q_base) {
+      min_deque.pop_back();
+    }
+    min_deque.emplace_back(i, q_base);
+    const std::uint32_t window_start_for_min =
+        (i >= k_ - 1U) ? (i - k_ + 1U) : 0U;
+    while (!min_deque.empty() && min_deque.front().first < window_start_for_min) {
+      min_deque.pop_front();
+    }
+
+    if (k_ <= 32) {
+      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
+    } else {
+      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
+      kmer_hi &= mask_hi;
+      kmer_lo = ((kmer_lo << 2) | c);
+    }
+    const std::uint64_t rc = c ^ 3ULL;
+    if (k_ <= 32) {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
+      rev_kmer_lo &= mask_lo;
+    } else {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3ULL) << 62);
+      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
+      rev_kmer_hi &= mask_hi;
+    }
+
+    if (i >= k_ - 1U) {
+      bool fwd_is_min = false;
+      if (k_ <= 32) {
+        fwd_is_min = kmer_lo < rev_kmer_lo;
+      } else {
+        if (kmer_hi < rev_kmer_hi) {
+          fwd_is_min = true;
+        } else if (kmer_hi > rev_kmer_hi) {
+          fwd_is_min = false;
+        } else {
+          fwd_is_min = kmer_lo < rev_kmer_lo;
+        }
+      }
+
+      const std::uint64_t sel_hi = fwd_is_min ? kmer_hi : rev_kmer_hi;
+      const std::uint64_t sel_lo = fwd_is_min ? kmer_lo : rev_kmer_lo;
+      const std::uint64_t h = hash2(sel_hi, sel_lo);
+      // The ONE FastK lookup per position, shared by both consumers below.
+      const std::uint32_t raw_count = fastk_get_count(sel_hi, sel_lo, k_);
+
+      // ---- minimizer side: runs every position (independent of step) ----
+      const std::uint64_t strand_bit = fwd_is_min ? 0ULL : 1ULL;
+      window_add(
+          set_top2(h, class_from_count(raw_count)),
+          (static_cast<std::uint64_t>(i - (k_ - 1U)) << 1) | strand_bit);
+
+      // ---- feature side: honours `step`, identical to FastKSketchReadInto ----
+      if ((kth % step) == 0) {
+        const std::uint32_t start = i - k_ + 1U;
+        const std::uint32_t sum_q = quality_prefix[i + 1] - quality_prefix[start];
+        const std::uint32_t avg_q = sum_q / k_;
+        const std::uint32_t min_q = min_deque.front().second;
+
+        ids_out.emplace_back(set_top2(h, 0));
+        counts_out.emplace_back(
+            static_cast<float>(std::min<std::uint32_t>(raw_count, max_kmer_count_)));
+        avg_qualities.emplace_back(avg_q);
+        min_qualities.emplace_back(min_q);
+      }
+      ++kth;
+    }
+
+    if (i >= (k_ - 1U) + (w_ - 1U)) {
+      for (auto it = window.begin(); it != window.end(); ++it) {
+        if (it->value != window.front().value) {
+          break;
+        }
+        if (it->origin & is_stored) {
+          continue;
+        }
+        dst.emplace_back(it->value, id | it->origin);
+        it->origin |= is_stored;
+      }
+      window_update(i - (k_ - 1U) - (w_ - 1U) + 1);
+    }
+  }
+
+  if (sequence->id < read_minimizers_.size()) {
+    read_minimizers_[sequence->id] = std::move(dst);
   }
 }
 
