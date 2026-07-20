@@ -1578,6 +1578,10 @@ void MinimizerEngine::FastKSketchReadInto(
   auto fastk_get_count = [&](std::uint64_t hi,
                              std::uint64_t lo,
                              std::uint32_t k) -> std::uint32_t {
+    if (internal_counter_) {
+      const std::uint32_t ic = internal_counter_->Lookup(hi, lo);
+      return ic ? ic : 1u;  // absent == dropped singleton -> true count is 1
+    }
     if (!fastk_kmer_table_) {
       return 0;
     }
@@ -1791,6 +1795,10 @@ void MinimizerEngine::SketchAndMinimizeFastK(
   auto fastk_get_count = [&](std::uint64_t hi,
                              std::uint64_t lo,
                              std::uint32_t k) -> std::uint32_t {
+    if (internal_counter_) {
+      const std::uint32_t ic = internal_counter_->Lookup(hi, lo);
+      return ic ? ic : 1u;  // absent == dropped singleton -> true count is 1
+    }
     if (!fastk_kmer_table_) {
       return 0;
     }
@@ -2397,6 +2405,10 @@ auto unpack_kmer_forward = [](std::uint64_t hi,
   auto fastk_get_count = [&](std::uint64_t hi,
                             std::uint64_t lo,
                             int k) -> std::uint32_t {
+    if (internal_counter_) {
+      const std::uint32_t ic = internal_counter_->Lookup(hi, lo);
+      return ic ? ic : 1u;  // absent == dropped singleton -> true count is 1
+    }
     if (!fastk_kmer_table_) return 0;
     auto map_0123_to_ACGT =[](char* buf, size_t n) -> void {
       static constexpr char lut[4] = {'a','c','g','t'};

@@ -135,7 +135,8 @@ set_target_properties(fastk PROPERTIES
 # -----------------------------------------------
 
 add_library(ram
-  src/minimizer_engine.cpp)
+  src/minimizer_engine.cpp
+  src/kmer_counter.cpp)
 add_library(ram::ram ALIAS ram)
 
 target_include_directories(${PROJECT_NAME} PUBLIC

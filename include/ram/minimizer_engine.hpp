@@ -16,6 +16,7 @@
 #include "thread_pool/thread_pool.hpp"
 #include "read_rec.hpp"
 #include "fastk_shim.h"
+#include "kmer_counter.hpp"
 
 namespace ram {
 
@@ -65,6 +66,13 @@ class MinimizerEngine {
 
   void LoadFastK(void);
   void EstimatePeaksFastK();
+
+  // Use an in-process k-mer counter instead of the FastK table for per-k-mer
+  // count lookups. Pass nullptr to revert to FastK. The counter must outlive
+  // any Minimize/Map/Sketch call made while it is set.
+  void set_internal_counter(const KmerCounter* counter) {
+    internal_counter_ = counter;
+  }
 
   void Hist(
       std::vector<std::unique_ptr<ReadRec>>::const_iterator first,
@@ -368,6 +376,7 @@ private:
   bool use_minimizers_ = false;
   Kmer_Table *fastk_kmer_table_ = nullptr;
   Histogram *fastk_histogram_ = nullptr;
+  const KmerCounter* internal_counter_ = nullptr;
   std::string fastk_counts_;
   float diploid_coverage_;
   float haploid_coverage_ratio_;
