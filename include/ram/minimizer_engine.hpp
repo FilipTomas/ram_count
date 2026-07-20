@@ -139,6 +139,16 @@ void FastKSketchReadInto(
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last);
 
+  // Recompute the per-position k-mer ids (set_top2(hash(canonical), 0)) for
+  // k-mer positions [first_pos, last_pos] (inclusive) of `read`, appending to
+  // `out`. These match the ids FastKSketchReadInto stores, so Jaccard is
+  // identical whether ids are stored on the pile or recomputed on demand.
+  void KmerIdsInRegion(
+      const biosoup::NucleicAcid& read,
+      std::uint32_t first_pos,
+      std::uint32_t last_pos,
+      std::vector<std::uint64_t>& out) const;
+
   // set occurrence frequency threshold
   void Filter(double frequency);
 

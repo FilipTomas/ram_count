@@ -340,6 +340,86 @@ void MinimizerEngine::BuildIndexFromStored(
   FinalizeIndex(minimizers);
 }
 
+void MinimizerEngine::KmerIdsInRegion(
+    const biosoup::NucleicAcid& read,
+    std::uint32_t first_pos,
+    std::uint32_t last_pos,
+    std::vector<std::uint64_t>& out) const {
+  if (read.inflated_len < k_) {
+    return;
+  }
+  const std::uint32_t max_pos = read.inflated_len - k_;  // last valid k-mer pos
+  if (first_pos > max_pos) {
+    return;
+  }
+  if (last_pos > max_pos) {
+    last_pos = max_pos;
+  }
+
+  auto hash2 = [](std::uint64_t hi, std::uint64_t lo) -> std::uint64_t {
+    std::uint64_t key = hi ^ (lo * 0x9e3779b97f4a7c15ULL);
+    key = ((~key) + (key << 21));
+    key = key ^ (key >> 24);
+    key = ((key + (key << 3)) + (key << 8));
+    key = key ^ (key >> 14);
+    key = ((key + (key << 2)) + (key << 4));
+    key = key ^ (key >> 28);
+    key = (key + (key << 31));
+    return key;
+  };
+  auto set_top2 = [](std::uint64_t key, std::uint8_t pattern) -> std::uint64_t {
+    key &= ~(3ULL << 62);
+    key |= (static_cast<std::uint64_t>(pattern & 3) << 62);
+    return key;
+  };
+
+  std::uint64_t kmer_lo = 0, kmer_hi = 0;
+  std::uint64_t rev_kmer_lo = 0, rev_kmer_hi = 0;
+  const std::uint64_t mask_lo = (k_ < 32) ? ((1ULL << (2 * k_)) - 1ULL) : ~0ULL;
+  const std::uint64_t mask_hi = (k_ > 32) ? ((1ULL << (2 * (k_ - 32))) - 1ULL)
+                                          : 0xFFFFFFFFFFFFFFFFULL;
+
+  const std::uint32_t last_read_pos = last_pos + k_ - 1;
+  for (std::uint32_t i = first_pos; i <= last_read_pos; ++i) {
+    const std::uint64_t c = read.Code(i);
+    if (k_ <= 32) {
+      kmer_lo = ((kmer_lo << 2) | c) & mask_lo;
+    } else {
+      kmer_hi = ((kmer_hi << 2) | (kmer_lo >> 62));
+      kmer_hi &= mask_hi;
+      kmer_lo = ((kmer_lo << 2) | c);
+    }
+    const std::uint64_t rc = c ^ 3ULL;
+    if (k_ <= 32) {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | (rc << (2 * (k_ - 1)));
+      rev_kmer_lo &= mask_lo;
+    } else {
+      rev_kmer_lo = (rev_kmer_lo >> 2) | ((rev_kmer_hi & 3ULL) << 62);
+      rev_kmer_hi = (rev_kmer_hi >> 2) | (rc << (2 * (k_ - 33)));
+      rev_kmer_hi &= mask_hi;
+    }
+
+    // emit once the first full k-mer (at k-mer position first_pos) is built
+    if (i + 1 >= first_pos + k_) {
+      bool fwd_is_min = false;
+      if (k_ <= 32) {
+        fwd_is_min = kmer_lo < rev_kmer_lo;
+      } else {
+        if (kmer_hi < rev_kmer_hi) {
+          fwd_is_min = true;
+        } else if (kmer_hi > rev_kmer_hi) {
+          fwd_is_min = false;
+        } else {
+          fwd_is_min = kmer_lo < rev_kmer_lo;
+        }
+      }
+      const std::uint64_t sel_hi = fwd_is_min ? kmer_hi : rev_kmer_hi;
+      const std::uint64_t sel_lo = fwd_is_min ? kmer_lo : rev_kmer_lo;
+      out.emplace_back(set_top2(hash2(sel_hi, sel_lo), 0));
+    }
+  }
+}
+
 void MinimizerEngine::Filter(double frequency) {
   if (frequency <= 0) {
     occurrence_ = -1;
