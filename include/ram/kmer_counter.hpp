@@ -25,6 +25,7 @@
 #define RAM_KMER_COUNTER_HPP_
 
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -62,6 +63,13 @@ class KmerCounter {
   void Count(
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
       std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last);
+
+  // Streaming API for overlapping counting with read parsing: CountAsync
+  // dispatches one read's counting to the pool and returns immediately (the
+  // NucleicAcid must stay alive until Finalize()); Finalize waits for all
+  // dispatched work and prunes. Call Finalize() once before any Lookup().
+  void CountAsync(const biosoup::NucleicAcid* read);
+  void Finalize();
 
   // O(1) exact lookup of a canonical k-mer given the engine's (hi, lo) words.
   // Returns 0 if the k-mer was pruned or never seen. Lock-free: valid only
@@ -107,7 +115,10 @@ class KmerCounter {
     return static_cast<std::size_t>(KeyHash{}(key) >> 17) & shard_mask_;
   }
 
-  void CountRead(const std::unique_ptr<biosoup::NucleicAcid>& read);
+  void CountRead(const biosoup::NucleicAcid& read);
+
+  // Drop entries below min_count across all shards (parallel).
+  void Prune();
 
   // Set the key's bloom bits (lock-free); return true iff all bits were already
   // set (i.e. the key was very likely seen before). Only meaningful if use_bloom_.
@@ -119,6 +130,7 @@ class KmerCounter {
   std::uint64_t shard_mask_;
   Key mask_;  // (1 << 2k) - 1, masks the packed k-mer to 2k bits
   std::vector<Shard> shards_;
+  std::vector<std::future<void>> pending_;  // in-flight CountAsync tasks
 
   // Bloom pre-filter (drops singletons without storing them). bloom_ is plain
   // storage accessed atomically via __atomic_* builtins; num bits is a power of

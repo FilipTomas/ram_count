@@ -53,9 +53,8 @@ bool KmerCounter::BloomTestAndSet(Key key) {
   return all_already_set;
 }
 
-void KmerCounter::CountRead(
-    const std::unique_ptr<biosoup::NucleicAcid>& read) {
-  if (read->inflated_len < k_) {
+void KmerCounter::CountRead(const biosoup::NucleicAcid& read) {
+  if (read.inflated_len < k_) {
     return;
   }
 
@@ -65,8 +64,8 @@ void KmerCounter::CountRead(
   const std::uint32_t k = k_;
   const std::uint32_t shift = 2 * (k - 1);
 
-  for (std::uint32_t i = 0; i < read->inflated_len; ++i) {
-    const Key c = static_cast<Key>(read->Code(i));         // 0..3
+  for (std::uint32_t i = 0; i < read.inflated_len; ++i) {
+    const Key c = static_cast<Key>(read.Code(i));          // 0..3
     fwd = ((fwd << 2) | c) & mask;                         // append at the low end
     const Key rc = c ^ 3;                                  // complement
     rev = ((rev >> 2) | (rc << shift)) & mask;             // append complement at the high end
@@ -102,58 +101,55 @@ void KmerCounter::CountRead(
   }
 }
 
+void KmerCounter::CountAsync(const biosoup::NucleicAcid* read) {
+  if (thread_pool_ == nullptr) {
+    CountRead(*read);
+    return;
+  }
+  pending_.emplace_back(thread_pool_->Submit(
+      [this](const biosoup::NucleicAcid* r) -> void { CountRead(*r); }, read));
+}
+
+void KmerCounter::Prune() {
+  // Drop k-mers below min_count (singletons by default). Safe to run in
+  // parallel across shards since each shard is independent.
+  if (min_count_ <= 1) {
+    return;
+  }
+  auto prune_shard = [this](Shard& s) {
+    for (auto it = s.counts.begin(); it != s.counts.end();) {
+      if (it->second < min_count_) {
+        it = s.counts.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  };
+  if (thread_pool_ == nullptr) {
+    for (auto& s : shards_) prune_shard(s);
+  } else {
+    std::vector<std::future<void>> futures;
+    for (std::size_t i = 0; i < shards_.size(); ++i) {
+      futures.emplace_back(thread_pool_->Submit(
+          [&](std::size_t idx) -> void { prune_shard(shards_[idx]); }, i));
+    }
+    for (auto& f : futures) f.wait();
+  }
+}
+
+void KmerCounter::Finalize() {
+  for (auto& f : pending_) f.wait();
+  pending_.clear();
+  Prune();
+}
+
 void KmerCounter::Count(
     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator first,
     std::vector<std::unique_ptr<biosoup::NucleicAcid>>::const_iterator last) {
-  if (thread_pool_ == nullptr) {
-    for (auto it = first; it != last; ++it) {
-      CountRead(*it);
-    }
-  } else {
-    std::vector<std::future<void>> futures;
-    for (auto it = first; it != last; ++it) {
-      futures.emplace_back(thread_pool_->Submit(
-          [this](decltype(it) jt) -> void { CountRead(*jt); }, it));
-    }
-    for (auto& f : futures) {
-      f.wait();
-    }
+  for (auto it = first; it != last; ++it) {
+    CountAsync(it->get());
   }
-
-  // Drop k-mers below min_count (singletons by default). Prune is safe to run
-  // in parallel across shards since each shard is independent.
-  if (min_count_ > 1) {
-    if (thread_pool_ == nullptr) {
-      for (auto& s : shards_) {
-        for (auto it = s.counts.begin(); it != s.counts.end();) {
-          if (it->second < min_count_) {
-            it = s.counts.erase(it);
-          } else {
-            ++it;
-          }
-        }
-      }
-    } else {
-      std::vector<std::future<void>> futures;
-      for (std::size_t i = 0; i < shards_.size(); ++i) {
-        futures.emplace_back(thread_pool_->Submit(
-            [this](std::size_t idx) -> void {
-              auto& m = shards_[idx].counts;
-              for (auto it = m.begin(); it != m.end();) {
-                if (it->second < min_count_) {
-                  it = m.erase(it);
-                } else {
-                  ++it;
-                }
-              }
-            },
-            i));
-      }
-      for (auto& f : futures) {
-        f.wait();
-      }
-    }
-  }
+  Finalize();
 }
 
 std::uint64_t KmerCounter::num_distinct() const {
