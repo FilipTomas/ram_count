@@ -2,6 +2,7 @@
 
 #include "ram/kmer_counter.hpp"
 
+#include <algorithm>
 #include <future>
 
 namespace ram {
@@ -161,12 +162,31 @@ std::uint64_t KmerCounter::num_distinct() const {
 }
 
 std::vector<std::uint64_t> KmerCounter::Histogram(std::uint32_t max) const {
+  // Every stride-th shard, from shard `first`; hash-map nodes are scattered,
+  // so one thread walking all of them takes minutes on a human chromosome.
+  auto shard_histogram = [&](std::size_t first, std::size_t stride) {
+    std::vector<std::uint64_t> hist(static_cast<std::size_t>(max) + 1, 0);
+    for (std::size_t i = first; i < shards_.size(); i += stride) {
+      for (const auto& kv : shards_[i].counts) {
+        ++hist[std::min(kv.second, max)];
+      }
+    }
+    return hist;
+  };
+  if (thread_pool_ == nullptr) {
+    return shard_histogram(0, 1);
+  }
+  const std::size_t stride =
+      std::min<std::size_t>(thread_pool_->num_threads(), shards_.size());
+  std::vector<std::future<std::vector<std::uint64_t>>> futures;
+  for (std::size_t i = 0; i < stride; ++i) {
+    futures.emplace_back(thread_pool_->Submit(shard_histogram, i, stride));
+  }
   std::vector<std::uint64_t> hist(static_cast<std::size_t>(max) + 1, 0);
-  for (const auto& s : shards_) {
-    for (const auto& kv : s.counts) {
-      std::uint32_t c = kv.second;
-      if (c > max) c = max;
-      ++hist[c];
+  for (auto& f : futures) {
+    const std::vector<std::uint64_t> part = f.get();
+    for (std::size_t c = 0; c < hist.size(); ++c) {
+      hist[c] += part[c];
     }
   }
   return hist;
