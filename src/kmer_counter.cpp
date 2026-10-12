@@ -4,8 +4,12 @@
 
 #include <algorithm>
 #include <future>
+#include <stdexcept>
+#include <string>
 
 namespace ram {
+
+constexpr std::uint64_t KmerCounter::kEmpty;
 
 KmerCounter::KmerCounter(
     std::uint32_t k,
@@ -16,10 +20,17 @@ KmerCounter::KmerCounter(
     : k_(k),
       min_count_(min_count),
       thread_pool_(std::move(thread_pool)),
-      shard_mask_((1ULL << shard_pow2) - 1),
-      mask_(k >= 64 ? ~static_cast<Key>(0)
-                    : ((static_cast<Key>(1) << (2 * k)) - 1)),
+      shard_pow2_(shard_pow2),
+      wide_(k > 32),
       shards_(static_cast<std::size_t>(1) << shard_pow2) {
+  if (k < 1 || k > 63) {
+    throw std::invalid_argument(
+        "[ram::KmerCounter] error: k must be in [1, 63], got " + std::to_string(k));
+  }
+  if (shard_pow2 > 32) {
+    throw std::invalid_argument(
+        "[ram::KmerCounter] error: shard_pow2 must be at most 32");
+  }
   if (bloom_capacity_hint > 0 && min_count_ >= 2) {
     // num bits = next power of two >= hint (>= 1 bit per expected distinct
     // k-mer; using total instances as the hint gives many bits per distinct).
@@ -34,13 +45,11 @@ KmerCounter::KmerCounter(
   }
 }
 
-bool KmerCounter::BloomTestAndSet(Key key) {
-  // Two 64-bit hashes from the 128-bit key (double hashing); h2 forced odd so
+bool KmerCounter::BloomTestAndSet(std::uint64_t hi, std::uint64_t lo) {
+  // Two 64-bit hashes from the key (double hashing); h2 forced odd so
   // (h1 + i*h2) mod 2^b visits distinct positions.
-  const std::uint64_t h1 = KeyHash{}(key);
-  const std::uint64_t h2 =
-      (Mix(static_cast<std::uint64_t>(key >> 64) ^
-           (static_cast<std::uint64_t>(key) + 0x100000001b3ULL)) | 1ULL);
+  const std::uint64_t h1 = Mix(lo) ^ Mix(hi + 0x9e3779b97f4a7c15ULL);
+  const std::uint64_t h2 = Mix(hi ^ (lo + 0x100000001b3ULL)) | 1ULL;
   bool all_already_set = true;
   for (std::uint32_t i = 0; i < bloom_hashes_; ++i) {
     const std::uint64_t bit = (h1 + static_cast<std::uint64_t>(i) * h2) & bloom_bit_mask_;
@@ -59,47 +68,110 @@ void KmerCounter::CountRead(const biosoup::NucleicAcid& read) {
     return;
   }
 
-  Key fwd = 0;
-  Key rev = 0;
-  const Key mask = mask_;
   const std::uint32_t k = k_;
   const std::uint32_t shift = 2 * (k - 1);
 
-  for (std::uint32_t i = 0; i < read.inflated_len; ++i) {
-    const Key c = static_cast<Key>(read.Code(i));          // 0..3
-    fwd = ((fwd << 2) | c) & mask;                         // append at the low end
-    const Key rc = c ^ 3;                                  // complement
-    rev = ((rev >> 2) | (rc << shift)) & mask;             // append complement at the high end
-
-    if (i + 1 >= k) {
-      const Key canon = fwd < rev ? fwd : rev;             // canonical = min(fwd, rev)
-      Shard& s = shards_[ShardOf(canon)];
-
-      if (use_bloom_) {
-        // Fast path: already promoted (seen >= 2 times) -> just increment.
-        {
-          std::lock_guard<std::mutex> lock(s.m);
-          auto it = s.counts.find(canon);
-          if (it != s.counts.end()) {
-            ++it->second;
-            continue;
-          }
-        }
-        // Not promoted yet: promote on the second (bloom-confirmed) sighting;
-        // the first sighting only sets bloom bits and is never stored.
-        if (BloomTestAndSet(canon)) {
-          std::lock_guard<std::mutex> lock(s.m);
-          auto res = s.counts.emplace(canon, 2u);
-          if (!res.second) {
-            ++res.first->second;  // promoted concurrently between find and here
-          }
-        }
-      } else {
-        std::lock_guard<std::mutex> lock(s.m);
-        ++s.counts[canon];
+  if (!wide_) {
+    std::uint64_t fwd = 0;
+    std::uint64_t rev = 0;
+    const std::uint64_t mask = k == 32 ? ~0ULL : (1ULL << (2 * k)) - 1;
+    for (std::uint32_t i = 0; i < read.inflated_len; ++i) {
+      const std::uint64_t c = read.Code(i);                // 0..3
+      fwd = ((fwd << 2) | c) & mask;                       // append at the low end
+      rev = ((rev >> 2) | ((c ^ 3) << shift)) & mask;      // complement at the high end
+      if (i + 1 >= k) {
+        Add(0, fwd < rev ? fwd : rev);                     // canonical = min(fwd, rev)
       }
     }
+    return;
   }
+
+  __uint128_t fwd = 0;
+  __uint128_t rev = 0;
+  const __uint128_t mask = (static_cast<__uint128_t>(1) << (2 * k)) - 1;
+  for (std::uint32_t i = 0; i < read.inflated_len; ++i) {
+    const __uint128_t c = read.Code(i);
+    fwd = ((fwd << 2) | c) & mask;
+    rev = ((rev >> 2) | ((c ^ 3) << shift)) & mask;
+    if (i + 1 >= k) {
+      const __uint128_t canon = fwd < rev ? fwd : rev;
+      Add(static_cast<std::uint64_t>(canon >> 64), static_cast<std::uint64_t>(canon));
+    }
+  }
+}
+
+void KmerCounter::Add(std::uint64_t hi, std::uint64_t lo) {
+  const std::uint64_t h = KeyHash(hi, lo);
+  Shard& s = shards_[ShardOf(h)];
+
+  if (use_bloom_) {
+    // Fast path: already promoted (seen >= 2 times) -> just increment.
+    {
+      std::lock_guard<std::mutex> lock(s.m);
+      if (!s.lo.empty()) {
+        const std::size_t i = Probe(s, hi, lo, h);
+        if (!IsFree(s, i)) {
+          ++s.counts[i];
+          return;
+        }
+      }
+    }
+    // Not promoted yet: promote on the second (bloom-confirmed) sighting;
+    // the first sighting only sets bloom bits and is never stored.
+    if (BloomTestAndSet(hi, lo)) {
+      std::lock_guard<std::mutex> lock(s.m);
+      std::uint32_t& count = Slot(s, hi, lo, h);
+      // nonzero: promoted concurrently between the two locks
+      count = count == 0 ? 2u : count + 1;
+    }
+  } else {
+    std::lock_guard<std::mutex> lock(s.m);
+    ++Slot(s, hi, lo, h);
+  }
+}
+
+std::uint32_t& KmerCounter::Slot(Shard& s, std::uint64_t hi, std::uint64_t lo,
+                                 std::uint64_t h) {
+  if ((s.size + 1) * 4 > s.lo.size() * 3) {
+    Rehash(s, std::max<std::size_t>(1024, 2 * s.lo.size()), 0);
+  }
+  const std::size_t i = Probe(s, hi, lo, h);
+  if (IsFree(s, i)) {
+    s.lo[i] = lo;
+    if (wide_) {
+      s.hi[i] = hi;
+    }
+    s.counts[i] = 0;
+    ++s.size;
+  }
+  return s.counts[i];
+}
+
+void KmerCounter::Rehash(Shard& s, std::size_t capacity,
+                         std::uint32_t min_count) {
+  Shard next;
+  next.lo.assign(capacity, kEmpty);
+  if (wide_) {
+    next.hi.assign(capacity, kEmpty);
+  }
+  next.counts.assign(capacity, 0);
+  for (std::size_t i = 0; i < s.lo.size(); ++i) {
+    if (IsFree(s, i) || s.counts[i] < min_count) {
+      continue;
+    }
+    const std::uint64_t hi = wide_ ? s.hi[i] : 0;
+    const std::size_t j = Probe(next, hi, s.lo[i], KeyHash(hi, s.lo[i]));
+    next.lo[j] = s.lo[i];
+    if (wide_) {
+      next.hi[j] = hi;
+    }
+    next.counts[j] = s.counts[i];
+    ++next.size;
+  }
+  s.lo.swap(next.lo);
+  s.hi.swap(next.hi);
+  s.counts.swap(next.counts);
+  s.size = next.size;
 }
 
 void KmerCounter::CountAsync(const biosoup::NucleicAcid* read) {
@@ -111,28 +183,31 @@ void KmerCounter::CountAsync(const biosoup::NucleicAcid* read) {
       [this](const biosoup::NucleicAcid* r) -> void { CountRead(*r); }, read));
 }
 
-void KmerCounter::Prune() {
-  // Drop k-mers below min_count (singletons by default). Safe to run in
-  // parallel across shards since each shard is independent.
-  if (min_count_ <= 1) {
-    return;
-  }
-  auto prune_shard = [this](Shard& s) {
-    for (auto it = s.counts.begin(); it != s.counts.end();) {
-      if (it->second < min_count_) {
-        it = s.counts.erase(it);
-      } else {
-        ++it;
+void KmerCounter::Compact() {
+  // Shards are independent, so this runs in parallel across them.
+  auto compact_shard = [this](Shard& s) {
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < s.lo.size(); ++i) {
+      if (!IsFree(s, i) && s.counts[i] >= min_count_) {
+        ++kept;
       }
     }
+    if (kept == 0) {
+      std::vector<std::uint64_t>().swap(s.lo);
+      std::vector<std::uint64_t>().swap(s.hi);
+      std::vector<std::uint32_t>().swap(s.counts);
+      s.size = 0;
+      return;
+    }
+    Rehash(s, kept * 4 / 3 + 1, min_count_);
   };
   if (thread_pool_ == nullptr) {
-    for (auto& s : shards_) prune_shard(s);
+    for (auto& s : shards_) compact_shard(s);
   } else {
     std::vector<std::future<void>> futures;
     for (std::size_t i = 0; i < shards_.size(); ++i) {
       futures.emplace_back(thread_pool_->Submit(
-          [&](std::size_t idx) -> void { prune_shard(shards_[idx]); }, i));
+          [&](std::size_t idx) -> void { compact_shard(shards_[idx]); }, i));
     }
     for (auto& f : futures) f.wait();
   }
@@ -141,7 +216,7 @@ void KmerCounter::Prune() {
 void KmerCounter::Finalize() {
   for (auto& f : pending_) f.wait();
   pending_.clear();
-  Prune();
+  Compact();
 }
 
 void KmerCounter::Count(
@@ -156,7 +231,7 @@ void KmerCounter::Count(
 std::uint64_t KmerCounter::num_distinct() const {
   std::uint64_t total = 0;
   for (const auto& s : shards_) {
-    total += s.counts.size();
+    total += s.size;
   }
   return total;
 }
@@ -167,8 +242,11 @@ std::vector<std::uint64_t> KmerCounter::Histogram(std::uint32_t max) const {
   auto shard_histogram = [&](std::size_t first, std::size_t stride) {
     std::vector<std::uint64_t> hist(static_cast<std::size_t>(max) + 1, 0);
     for (std::size_t i = first; i < shards_.size(); i += stride) {
-      for (const auto& kv : shards_[i].counts) {
-        ++hist[std::min(kv.second, max)];
+      const Shard& s = shards_[i];
+      for (std::size_t j = 0; j < s.lo.size(); ++j) {
+        if (!IsFree(s, j)) {
+          ++hist[std::min(s.counts[j], max)];
+        }
       }
     }
     return hist;
