@@ -22,6 +22,10 @@ namespace ram {
 
 class MinimizerEngine {
  public:
+  // chained minimizer matches backing one overlap, as (lhs, rhs) k-mer start
+  // positions on the forward strands, in increasing lhs order
+  using Anchors = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
   MinimizerEngine(
       std::shared_ptr<thread_pool::ThreadPool> thread_pool = nullptr,
       std::uint32_t k = 21,  // element of [1, 31]
@@ -72,6 +76,13 @@ class MinimizerEngine {
   // any Minimize/Map/Sketch call made while it is set.
   void set_internal_counter(const KmerCounter* counter) {
     internal_counter_ = counter;
+  }
+
+  // Map/MapRepetitive leave out of the returned anchors every minimizer with
+  // more than this many index occurrences (repeats, whose matches may pin an
+  // alignment to the wrong copy); 0 keeps all
+  void set_anchor_max_occurrence(std::uint32_t n) {
+    anchor_max_occurrence_ = n;
   }
 
   void Hist(
@@ -153,12 +164,14 @@ void FastKSketchReadInto(
   void Filter(double frequency);
 
   // find overlaps in preconstructed minimizer index
+  // anchors: if set, receives one Anchors per returned overlap (same order)
   std::vector<biosoup::Overlap> Map(
       const std::unique_ptr<biosoup::NucleicAcid>& sequence,
       bool avoid_equal,  // ignore overlaps in which lhs_id == rhs_id
       bool avoid_symmetric,  // ignore overlaps in which lhs_id > rhs_id
       bool minhash = false,  // only lhs
-      std::vector<std::uint32_t>* filtered = nullptr) const;
+      std::vector<std::uint32_t>* filtered = nullptr,
+      std::vector<Anchors>* anchors = nullptr) const;
 
   // find overlaps between a pair of sequences
   std::vector<biosoup::Overlap> Map(
@@ -174,7 +187,8 @@ void FastKSketchReadInto(
       bool avoid_equal,
       bool avoid_symmetric,
       bool minhash = false,
-      std::vector<std::uint32_t>* filtered = nullptr) const;
+      std::vector<std::uint32_t>* filtered = nullptr,
+      std::vector<Anchors>* anchors = nullptr) const;
 
   std::uint32_t het_peak() const {
     return het_peak_;
@@ -335,13 +349,19 @@ private:
   // std::vector<Kmer> MinimizeRepetitiveByCount(
   //   const std::unique_ptr<biosoup::NucleicAcid>& sequence) const;
 
+  // repetitive: sorted lhs positions of minimizers left out of anchors
   std::vector<biosoup::Overlap> Chain(
       std::uint64_t lhs_id,
-      std::vector<Match>&& matches) const;
+      std::vector<Match>&& matches,
+      std::vector<Anchors>* anchors = nullptr,
+      const std::vector<std::uint32_t>* repetitive = nullptr) const;
 
+  // repetitive: sorted lhs positions of minimizers left out of anchors
   std::vector<biosoup::Overlap> ChainRepetitive(
       std::uint64_t lhs_id,
-      std::vector<Match>&& matches) const;
+      std::vector<Match>&& matches,
+      std::vector<Anchors>* anchors = nullptr,
+      const std::vector<std::uint32_t>* repetitive = nullptr) const;
 
   template<typename RandomAccessIterator, typename Compare>
   static void RadixSort(
@@ -387,6 +407,7 @@ private:
   Kmer_Table *fastk_kmer_table_ = nullptr;
   Histogram *fastk_histogram_ = nullptr;
   const KmerCounter* internal_counter_ = nullptr;
+  std::uint32_t anchor_max_occurrence_ = 0;
   std::string fastk_counts_;
   float diploid_coverage_;
   float haploid_coverage_ratio_;

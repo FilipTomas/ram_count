@@ -4,6 +4,7 @@
 #include "ram/gmm.hpp"
 #include "ram/fastk_shim.h"
 //#include "ram/read_rec.hpp"
+#include <algorithm>
 #include <deque>
 #include <stdexcept>
 #include <iostream>
@@ -464,7 +465,8 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     bool avoid_equal,
     bool avoid_symmetric,
     bool minhash,
-    std::vector<std::uint32_t>* filtered) const {
+    std::vector<std::uint32_t>* filtered,
+    std::vector<Anchors>* anchors) const {
   auto sketch = StoredSketchOrMinimize(sequence);
   if (sketch.empty()) {
     return std::vector<biosoup::Overlap>{};
@@ -523,10 +525,15 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
 
   sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
 
+  std::vector<std::uint32_t> repetitive;  // lhs positions kept out of anchors
+
   for (const auto& kmer : sketch) {
     std::uint32_t i = kmer.value & mask;
     const uint64_t* origins = nullptr;
     auto n = index_[i].Find(kmer.value, &origins);
+    if (anchors && anchor_max_occurrence_ && n > anchor_max_occurrence_) {
+      repetitive.emplace_back(kmer.position());
+    }
 
   //  std::uint8_t cls = static_cast<std::uint8_t>(kmer.value >> 62);
 
@@ -585,7 +592,8 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
     }*/
   }
 
-  return Chain(sequence->id, std::move(matches));
+  std::sort(repetitive.begin(), repetitive.end());
+  return Chain(sequence->id, std::move(matches), anchors, &repetitive);
 }
 
 std::vector<biosoup::Overlap> MinimizerEngine::Map(
@@ -643,7 +651,9 @@ std::vector<biosoup::Overlap> MinimizerEngine::Map(
 
 std::vector<biosoup::Overlap> MinimizerEngine::Chain(
     std::uint64_t lhs_id,
-    std::vector<Match>&& matches) const {
+    std::vector<Match>&& matches,
+    std::vector<Anchors>* anchors,
+    const std::vector<std::uint32_t>* repetitive) const {
   RadixSort(matches.begin(), matches.end(), 64, Match::SortByGroup);
   matches.emplace_back(-1, -1);  // stop dummy
 
@@ -751,6 +761,20 @@ std::vector<biosoup::Overlap> MinimizerEngine::Chain(
             std::min(lhs_matches, rhs_matches),
             strand);
 
+        if (anchors) {
+          anchors->emplace_back();
+          anchors->back().reserve(k - l);
+          for (std::uint64_t m = l; m < k; ++m) {
+            const std::uint32_t lhs_pos = matches[j + indices[m]].lhs_position();
+            if (repetitive && std::binary_search(
+                    repetitive->begin(), repetitive->end(), lhs_pos)) {
+              continue;
+            }
+            anchors->back().emplace_back(
+                lhs_pos, matches[j + indices[m]].rhs_position());
+          }
+        }
+
         l = k;
       }
     }
@@ -763,7 +787,8 @@ std::vector<biosoup::Overlap> MinimizerEngine::MapRepetitive(
     bool avoid_equal,
     bool avoid_symmetric,
     bool minhash,
-    std::vector<std::uint32_t>* filtered) const {
+    std::vector<std::uint32_t>* filtered,
+    std::vector<Anchors>* anchors) const {
   auto sketch = StoredSketchOrMinimize(sequence);
   if (sketch.empty()) {
     return std::vector<biosoup::Overlap>{};
@@ -805,10 +830,15 @@ std::vector<biosoup::Overlap> MinimizerEngine::MapRepetitive(
 
   sketch.emplace_back(-1, sequence->inflated_len << 1);  // stop dummy
 
+  std::vector<std::uint32_t> repetitive;  // lhs positions kept out of anchors
+
   for (const auto& kmer : sketch) {
     std::uint32_t i = kmer.value & mask;
     const uint64_t* origins = nullptr;
     auto n = index_[i].Find(kmer.value, &origins);
+    if (anchors && anchor_max_occurrence_ && n > anchor_max_occurrence_) {
+      repetitive.emplace_back(kmer.position());
+    }
 
     if (n > occurrence_) {
       // cap all high-frequency k-mers; don't discard any
@@ -827,12 +857,15 @@ std::vector<biosoup::Overlap> MinimizerEngine::MapRepetitive(
     }
   }
 
-  return ChainRepetitive(sequence->id, std::move(matches));
+  std::sort(repetitive.begin(), repetitive.end());
+  return ChainRepetitive(sequence->id, std::move(matches), anchors, &repetitive);
 }
 
 std::vector<biosoup::Overlap> MinimizerEngine::ChainRepetitive(
     std::uint64_t lhs_id,
-    std::vector<Match>&& matches) const {
+    std::vector<Match>&& matches,
+    std::vector<Anchors>* anchors,
+    const std::vector<std::uint32_t>* repetitive) const {
   RadixSort(matches.begin(), matches.end(), 64, Match::SortByGroup);
   matches.emplace_back(-1, -1);  // stop dummy
 
@@ -939,6 +972,20 @@ std::vector<biosoup::Overlap> MinimizerEngine::ChainRepetitive(
                 matches[j + indices[l]].rhs_position()),
             std::min(lhs_matches, rhs_matches),
             strand);
+
+        if (anchors) {
+          anchors->emplace_back();
+          anchors->back().reserve(k - l);
+          for (std::uint64_t m = l; m < k; ++m) {
+            const std::uint32_t lhs_pos = matches[j + indices[m]].lhs_position();
+            if (repetitive && std::binary_search(
+                    repetitive->begin(), repetitive->end(), lhs_pos)) {
+              continue;
+            }
+            anchors->back().emplace_back(
+                lhs_pos, matches[j + indices[m]].rhs_position());
+          }
+        }
 
         l = k;
       }
